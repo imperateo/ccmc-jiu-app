@@ -854,10 +854,12 @@ function StudentModal({ student, onClose, modelsLoaded }) {
             const newDescriptor = Array.from(detection.descriptor);
             
             setDescriptorArray(prev => {
-              const updated = prev ? [...prev] : [];
-              updated.push(newDescriptor);
+              const base = Array.isArray(prev) ? prev : [];
+              const updated = [...base, newDescriptor];
               return updated.slice(0, 5);
             });
+
+
 
              setTimeout(() => {
                stopCamera();
@@ -982,7 +984,7 @@ try {
               
               {!isCapturing ? (
                 <div className="space-y-3">
-                  {descriptorArray ? (
+                 {descriptorArray.length > 0 ? (
                     <div className="bg-green-50 text-green-800 p-3 rounded-lg border border-green-200 flex items-center gap-2 text-sm font-medium">
                       <CheckCircle2 size={18} /> Assinatura facial gravada no sistema.
                     </div>
