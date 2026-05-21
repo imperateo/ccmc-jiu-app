@@ -896,15 +896,11 @@ const handleSave = async (e) => {
       name: name.trim(),
       belt,
       degrees: Number(degrees),
-      descriptorArray:
-        Array.isArray(descriptorArray) && Array.isArray(descriptorArray[0])
-        ? descriptorArray
-        : Array.isArray(descriptorArray)
-        ? [descriptorArray]
+      descriptorArray: Array.isArray(descriptorArray)
+        ? descriptorArray.map(d => Array.from(d))
         : [],
       updatedAt: Date.now()
     };
-
 
     try {
       if (student?.id) {
