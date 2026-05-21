@@ -1207,15 +1207,17 @@ function AttendanceView({ students, modelsLoaded, triggerAlert }) {
       const matchedIds = new Set();
       const resultsForCanvas = [];
 
-      detections.forEach(fd => {
-        const bestMatch = faceMatcher.findBestMatch(fd.descriptor);
-        resultsForCanvas.push({ detection: fd, match: bestMatch });
-        // filtro extra contra falso positivo
-        if (bestMatch.label !== 'unknown' && bestMatch.distance < 0.6) {
-          matchedIds.add(bestMatch.label);
-        }
-        }
-      });
+     
+detections.forEach(fd => {
+  const bestMatch = faceMatcher.findBestMatch(fd.descriptor);
+
+  resultsForCanvas.push({ detection: fd, match: bestMatch });
+
+  if (bestMatch.label !== 'unknown' && bestMatch.distance < 0.6) {
+    matchedIds.add(bestMatch.label);
+  }
+});
+
 
       // Desenha quadrados e tags sobre o rosto dos alunos detectados
       if (canvasRef.current && imageRef.current) {
