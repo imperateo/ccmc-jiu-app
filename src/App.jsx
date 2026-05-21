@@ -19,7 +19,7 @@ const firebaseConfig = {
   projectId: "ccmc-app-jiu-jitsu",
   storageBucket: "ccmc-app-jiu-jitsu.firebasestorage.app",
   messagingSenderId: "391376795848",
-  appId: "1:391376795848:web:29372567c1309b8ded0dfd",
+  appId: "1:391376795848:web:29372567c1309b8ded0dfd",  
   measurementId: "G-G2R3CWW95W"
 };
 const app = initializeApp(firebaseConfig);
@@ -1174,7 +1174,7 @@ function AttendanceView({ students, modelsLoaded, triggerAlert }) {
         return;
       }
 
-      const faceMatcher = new window.faceapi.FaceMatcher(labeledDescriptors, 0.55);
+      const faceMatcher = new window.faceapi.FaceMatcher(labeledDescriptors, 0.6);
       setProgressText(`3. Cruzando os ${detections.length} rostos detectados com a base de dados do CCMC...`);
 
       const matchedIds = new Set();
