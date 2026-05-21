@@ -14,12 +14,13 @@ import {
 // CONFIGURAÇÃO E INICIALIZAÇÃO DO FIREBASE
 // ============================================================================
 const firebaseConfig = {
-  apiKey: "SUA_API_KEY",
-  authDomain: "SEU_PROJETO.firebaseapp.com",
-  projectId: "SEU_PROJECT_ID",
-  storageBucket: "SEU_BUCKET",
-  messagingSenderId: "SEU_ID",
-  appId: "SEU_APP_ID"
+  apiKey: "AIzaSyBImAFyud2uuL2wj4fgJHtYCkABoKPviZI",
+  authDomain: "ccmc-app-jiu-jitsu.firebaseapp.com",
+  projectId: "ccmc-app-jiu-jitsu",
+  storageBucket: "ccmc-app-jiu-jitsu.firebasestorage.app",
+  messagingSenderId: "391376795848",
+  appId: "1:391376795848:web:29372567c1309b8ded0dfd",
+  measurementId: "G-G2R3CWW95W"
 };
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
