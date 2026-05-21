@@ -891,6 +891,7 @@ const handleSave = async (e) => {
   if (!descriptorArray || descriptorArray.length === 0) {
     alert("Capture o rosto antes de salvar!");
     return;
+  }
 
     const data = {
       name: name.trim(),
