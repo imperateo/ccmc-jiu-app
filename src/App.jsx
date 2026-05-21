@@ -888,10 +888,15 @@ const handleSave = async (e) => {
     return;
   }
 
-  if (!descriptorArray || descriptorArray.length === 0) {
-    alert("Capture o rosto antes de salvar!");
-    return;
-  }
+  
+if (
+  !descriptorArray ||
+  (Array.isArray(descriptorArray) && descriptorArray.length === 0)
+) {
+  alert("Capture o rosto antes de salvar!");
+  return;
+}
+
 
     
 const data = {
@@ -904,6 +909,7 @@ const data = {
 
 
     
+
 try {
   if (student?.id) {
     await setDoc(doc(db, 'students', student.id), data, { merge: true });
@@ -912,13 +918,14 @@ try {
     await addDoc(collection(db, 'students'), data);
   }
 
-  console.log("SALVOU NO FIREBASE"); // mantém pra teste
+  console.log("SALVOU");
 
-  onClose();
+  onClose(); // ✅ SÓ AQUI
 } catch (err) {
   console.error("Erro ao salvar cadastro:", err);
   alert("Erro ao salvar: " + err.message);
 }
+
 
   };
 
