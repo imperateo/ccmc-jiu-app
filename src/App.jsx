@@ -1188,12 +1188,15 @@ function AttendanceView({ students, modelsLoaded, triggerAlert }) {
 
       setProgressText(`2. Buscando assinaturas faciais cadastradas (${students.length})...`);
       
-      const labeledDescriptors = students
-       .filter(s => Array.isArray(s.descriptorArray))
-        .map(s => {
-          const descriptors = s.descriptorArray.map(d => new Float32Array(d));
-          return new window.faceapi.LabeledFaceDescriptors(s.id, descriptors);
-        });
+      
+const labeledDescriptors = students
+  .filter(s => typeof s.descriptorArray === 'string')
+  .map(s => {
+    const parsed = JSON.parse(s.descriptorArray);
+    const descriptors = parsed.map(d => new Float32Array(d));
+    return new window.faceapi.LabeledFaceDescriptors(s.id, descriptors);
+  });
+
 
       if (labeledDescriptors.length === 0) {
         setProgressText('Erro: Nenhum aluno possui biometria facial gravada no sistema.');
