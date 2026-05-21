@@ -889,13 +889,12 @@ const handleSave = async (e) => {
   }
 
   
-if (
-  !descriptorArray ||
-  (Array.isArray(descriptorArray) && descriptorArray.length === 0)
-) {
+
+if (!descriptorArray || descriptorArray.length === 0) {
   alert("Capture o rosto antes de salvar!");
   return;
 }
+
 
 
     
