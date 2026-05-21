@@ -777,9 +777,7 @@ function StudentModal({ student, onClose, modelsLoaded }) {
   const [isCapturing, setIsCapturing] = useState(false);
   const [facingMode, setFacingMode] = useState('user'); // 'user' (frontal) ou 'environment' (traseira)
   const [captureStatus, setCaptureStatus] = useState('');
-  const [descriptorArray, setDescriptorArray] = useState(student?.descriptorArray ? JSON.parse(student.descriptorArray) : []
-);
-
+  const [descriptorArray, setDescriptorArray] = useState(student?.descriptorArray || null);
   
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
@@ -850,17 +848,8 @@ function StudentModal({ student, onClose, modelsLoaded }) {
 
           if (detection.detection.score > 0.8) {
              setCaptureStatus('Rosto detectado com sucesso! Processando biometria...');
-            
-            const newDescriptor = Array.from(detection.descriptor);
-            
-            setDescriptorArray(prev => {
-              const base = Array.isArray(prev) ? prev : [];
-              const updated = [...base, newDescriptor];
-              return updated.slice(0, 5);
-            });
-
-
-
+             const descArray = Array.from(detection.descriptor);
+             setDescriptorArray(descArray);
              setTimeout(() => {
                stopCamera();
                setCaptureStatus('Biometria Facial salva temporariamente. Salve o cadastro.');
@@ -884,42 +873,30 @@ function StudentModal({ student, onClose, modelsLoaded }) {
     detectFace();
   };
 
-const handleSave = async (e) => {
-  e.preventDefault();
+  const handleSave = async (e) => {
+    e.preventDefault();
+    if (!name.trim()) return;
 
-  if (!name.trim()) {
-    alert("Digite o nome do aluno");
-    return;
-  }
+    const data = {
+      name: name.trim(),
+      belt,
+      degrees: Number(degrees),
+      descriptorArray,
+      updatedAt: Date.now()
+    };
 
-  if (descriptorRef.current.length === 0) {
-    alert("Capture o rosto antes de salvar!");
-    return;
-  }
-
-  const data = {
-    name: name.trim(),
-    belt,
-    degrees: Number(degrees),
-    descriptorArray: JSON.stringify(descriptorRef.current),
-    updatedAt: Date.now()
-  };
-
-  try {
-    if (student?.id) {
-      await setDoc(doc(db, 'students', student.id), data, { merge: true });
-    } else {
-      data.createdAt = Date.now();
-      await addDoc(collection(db, 'students'), data);
+    try {
+      if (student?.id) {
+        await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'students', student.id), data, { merge: true });
+      } else {
+        data.createdAt = Date.now();
+        await addDoc(getPublicPath('students'), data);
+      }
+      onClose();
+    } catch (err) {
+      console.error("Erro ao salvar cadastro:", err);
     }
-
-    console.log("SALVOU");
-    onClose();
-  } catch (err) {
-    console.error(err);
-    alert("Erro: " + err.message);
-  }
-};
+  };
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-fade-in">
@@ -973,7 +950,7 @@ const handleSave = async (e) => {
               
               {!isCapturing ? (
                 <div className="space-y-3">
-                 {descriptorArray.length > 0 ? (
+                  {descriptorArray ? (
                     <div className="bg-green-50 text-green-800 p-3 rounded-lg border border-green-200 flex items-center gap-2 text-sm font-medium">
                       <CheckCircle2 size={18} /> Assinatura facial gravada no sistema.
                     </div>
@@ -1170,13 +1147,10 @@ function AttendanceView({ students, modelsLoaded, triggerAlert }) {
     
     try {
       const detections = await window.faceapi
-        .detectAllFaces(
-          imageRef.current,
-          new window.faceapi.SsdMobilenetv1Options({ minConfidence: 0.6 })
-        )
+        .detectAllFaces(imageRef.current)
         .withFaceLandmarks()
         .withFaceDescriptors();
-  
+        
       setDetectedFacesCount(detections.length);
       
       if (detections.length === 0) {
@@ -1187,17 +1161,12 @@ function AttendanceView({ students, modelsLoaded, triggerAlert }) {
 
       setProgressText(`2. Buscando assinaturas faciais cadastradas (${students.length})...`);
       
-      
-
-const labeledDescriptors = students
-  .filter(s => typeof s.descriptorArray === 'string')
-  .map(s => {
-    const parsed = JSON.parse(s.descriptorArray);
-    const descriptors = parsed.map(d => new Float32Array(d));
-    return new window.faceapi.LabeledFaceDescriptors(s.id, descriptors);
-  });
-
-
+      const labeledDescriptors = students
+        .filter(s => s.descriptorArray && s.descriptorArray.length === 128)
+        .map(s => {
+           const float32Array = new Float32Array(s.descriptorArray);
+           return new window.faceapi.LabeledFaceDescriptors(s.id, [float32Array]);
+        });
 
       if (labeledDescriptors.length === 0) {
         setProgressText('Erro: Nenhum aluno possui biometria facial gravada no sistema.');
@@ -1205,23 +1174,19 @@ const labeledDescriptors = students
         return;
       }
 
-      const faceMatcher = new window.faceapi.FaceMatcher(labeledDescriptors, 0.5);
+      const faceMatcher = new window.faceapi.FaceMatcher(labeledDescriptors, 0.6);
       setProgressText(`3. Cruzando os ${detections.length} rostos detectados com a base de dados do CCMC...`);
 
       const matchedIds = new Set();
       const resultsForCanvas = [];
 
-     
-detections.forEach(fd => {
-  const bestMatch = faceMatcher.findBestMatch(fd.descriptor);
-
-  resultsForCanvas.push({ detection: fd, match: bestMatch });
-
-  if (bestMatch.label !== 'unknown' && bestMatch.distance < 0.6) {
-    matchedIds.add(bestMatch.label);
-  }
-});
-
+      detections.forEach(fd => {
+        const bestMatch = faceMatcher.findBestMatch(fd.descriptor);
+        resultsForCanvas.push({ detection: fd, match: bestMatch });
+        if (bestMatch.label !== 'unknown') {
+          matchedIds.add(bestMatch.label);
+        }
+      });
 
       // Desenha quadrados e tags sobre o rosto dos alunos detectados
       if (canvasRef.current && imageRef.current) {
