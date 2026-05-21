@@ -1190,8 +1190,10 @@ function AttendanceView({ students, modelsLoaded, triggerAlert }) {
       detections.forEach(fd => {
         const bestMatch = faceMatcher.findBestMatch(fd.descriptor);
         resultsForCanvas.push({ detection: fd, match: bestMatch });
-        if (bestMatch.label !== 'unknown') {
+        // filtro extra contra falso positivo
+        if (bestMatch.label !== 'unknown' && bestMatch.distance < 0.6) {
           matchedIds.add(bestMatch.label);
+        }
         }
       });
 
