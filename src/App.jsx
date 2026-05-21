@@ -892,45 +892,34 @@ const handleSave = async (e) => {
     return;
   }
 
-  
-
-if (!descriptorArray || descriptorArray.length === 0) {
-  alert("Capture o rosto antes de salvar!");
-  return;
-}
-
-
-
-    
-const data = {
-  name: name.trim(),
-  belt,
-  degrees: Number(degrees),
-  descriptorArray: JSON.stringify(descriptorArray),
-  updatedAt: Date.now()
-};
-
-
-    
-
-try {
-  if (student?.id) {
-    await setDoc(doc(db, 'students', student.id), data, { merge: true });
-  } else {
-    data.createdAt = Date.now();
-    await addDoc(collection(db, 'students'), data);
+  if (descriptorRef.current.length === 0) {
+    alert("Capture o rosto antes de salvar!");
+    return;
   }
 
-  console.log("SALVOU");
-
-  onClose(); // ✅ SÓ AQUI
-} catch (err) {
-  console.error("Erro ao salvar cadastro:", err);
-  alert("Erro ao salvar: " + err.message);
-}
-
-
+  const data = {
+    name: name.trim(),
+    belt,
+    degrees: Number(degrees),
+    descriptorArray: JSON.stringify(descriptorRef.current),
+    updatedAt: Date.now()
   };
+
+  try {
+    if (student?.id) {
+      await setDoc(doc(db, 'students', student.id), data, { merge: true });
+    } else {
+      data.createdAt = Date.now();
+      await addDoc(collection(db, 'students'), data);
+    }
+
+    console.log("SALVOU");
+    onClose();
+  } catch (err) {
+    console.error(err);
+    alert("Erro: " + err.message);
+  }
+};
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-fade-in">
