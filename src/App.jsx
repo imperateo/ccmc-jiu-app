@@ -848,8 +848,15 @@ function StudentModal({ student, onClose, modelsLoaded }) {
 
           if (detection.detection.score > 0.8) {
              setCaptureStatus('Rosto detectado com sucesso! Processando biometria...');
-             const descArray = Array.from(detection.descriptor);
-             setDescriptorArray(descArray);
+            
+            const newDescriptor = Array.from(detection.descriptor);
+            
+            setDescriptorArray(prev => {
+              const updated = prev ? [...prev] : [];
+              updated.push(newDescriptor);
+              return updated.slice(0, 5);
+            });
+
              setTimeout(() => {
                stopCamera();
                setCaptureStatus('Biometria Facial salva temporariamente. Salve o cadastro.');
