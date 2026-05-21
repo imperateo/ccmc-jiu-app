@@ -777,7 +777,7 @@ function StudentModal({ student, onClose, modelsLoaded }) {
   const [isCapturing, setIsCapturing] = useState(false);
   const [facingMode, setFacingMode] = useState('user'); // 'user' (frontal) ou 'environment' (traseira)
   const [captureStatus, setCaptureStatus] = useState('');
-  const [descriptorArray, setDescriptorArray] = useState(student?.descriptorArray ? JSON.parse(student.descriptorArray) : null
+  const [descriptorArray, setDescriptorArray] = useState(student?.descriptorArray ? JSON.parse(student.descriptorArray) : []
 );
 
   
