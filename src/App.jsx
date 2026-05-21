@@ -777,7 +777,9 @@ function StudentModal({ student, onClose, modelsLoaded }) {
   const [isCapturing, setIsCapturing] = useState(false);
   const [facingMode, setFacingMode] = useState('user'); // 'user' (frontal) ou 'environment' (traseira)
   const [captureStatus, setCaptureStatus] = useState('');
-  const [descriptorArray, setDescriptorArray] = useState(student?.descriptorArray || null);
+  const [descriptorArray, setDescriptorArray] = useState(student?.descriptorArray ? JSON.parse(student.descriptorArray) : null
+);
+
   
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
@@ -890,7 +892,7 @@ const handleSave = async (e) => {
 
   
 
-if (!descriptorArray || descriptorArray.length === 0) {
+if (!descriptorArray || descriptorArray.length === 1) {
   alert("Capture o rosto antes de salvar!");
   return;
 }
