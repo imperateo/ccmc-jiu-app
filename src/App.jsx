@@ -1172,10 +1172,10 @@ function AttendanceView({ students, modelsLoaded, triggerAlert }) {
       setProgressText(`2. Buscando assinaturas faciais cadastradas (${students.length})...`);
       
       const labeledDescriptors = students
-        .filter(s => s.descriptorArray && s.descriptorArray.length === 128)
+       .filter(s => Array.isArray(s.descriptorArray))
         .map(s => {
-           const float32Array = new Float32Array(s.descriptorArray);
-           return new window.faceapi.LabeledFaceDescriptors(s.id, [float32Array]);
+          const descriptors = s.descriptorArray.map(d => new Float32Array(d));
+          return new window.faceapi.LabeledFaceDescriptors(s.id, descriptors);
         });
 
       if (labeledDescriptors.length === 0) {
