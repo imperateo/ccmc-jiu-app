@@ -902,18 +902,23 @@ const handleSave = async (e) => {
       updatedAt: Date.now()
     };
 
-    try {
-      if (student?.id) {
-        await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'students', student.id), data, { merge: true });
-      } else {
-        data.createdAt = Date.now();
-        await addDoc(getPublicPath('students'), data);
-      }
-      onClose();
-    } catch (err) {
-      console.error("Erro ao salvar cadastro:", err);
-      alert("Erro ao salvar: " + err.message);
-    }
+    
+try {
+  if (student?.id) {
+    await setDoc(doc(db, 'students', student.id), data, { merge: true });
+  } else {
+    data.createdAt = Date.now();
+    await addDoc(collection(db, 'students'), data);
+  }
+
+  console.log("SALVOU NO FIREBASE"); // mantém pra teste
+
+  onClose();
+} catch (err) {
+  console.error("Erro ao salvar cadastro:", err);
+  alert("Erro ao salvar: " + err.message);
+}
+
   };
 
   return (
