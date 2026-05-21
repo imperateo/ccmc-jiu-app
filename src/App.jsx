@@ -893,15 +893,15 @@ const handleSave = async (e) => {
     return;
   }
 
-    const data = {
-      name: name.trim(),
-      belt,
-      degrees: Number(degrees),
-      descriptorArray: Array.isArray(descriptorArray)
-        ? descriptorArray.map(d => Array.from(d))
-        : [],
-      updatedAt: Date.now()
-    };
+    
+const data = {
+  name: name.trim(),
+  belt,
+  degrees: Number(degrees),
+  descriptorArray: JSON.stringify(descriptorArray),
+  updatedAt: Date.now()
+};
+
 
     
 try {
