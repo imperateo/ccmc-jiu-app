@@ -1154,10 +1154,13 @@ function AttendanceView({ students, modelsLoaded, triggerAlert }) {
     
     try {
       const detections = await window.faceapi
-        .detectAllFaces(imageRef.current)
+        .detectAllFaces(
+          imageRef.current,
+          new window.faceapi.SsdMobilenetv1Options({ minConfidence: 0.6 })
+        )
         .withFaceLandmarks()
         .withFaceDescriptors();
-        
+  
       setDetectedFacesCount(detections.length);
       
       if (detections.length === 0) {
