@@ -1184,7 +1184,7 @@ function AttendanceView({ students, modelsLoaded, triggerAlert }) {
         return;
       }
 
-      const faceMatcher = new window.faceapi.FaceMatcher(labeledDescriptors, 0.6);
+      const faceMatcher = new window.faceapi.FaceMatcher(labeledDescriptors, 0.5);
       setProgressText(`3. Cruzando os ${detections.length} rostos detectados com a base de dados do CCMC...`);
 
       const matchedIds = new Set();
