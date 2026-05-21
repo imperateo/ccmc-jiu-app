@@ -880,17 +880,31 @@ function StudentModal({ student, onClose, modelsLoaded }) {
     detectFace();
   };
 
-  const handleSave = async (e) => {
-    e.preventDefault();
-    if (!name.trim()) return;
+const handleSave = async (e) => {
+  e.preventDefault();
+
+  if (!name.trim()) {
+    alert("Digite o nome do aluno");
+    return;
+  }
+
+  if (!descriptorArray || descriptorArray.length === 0) {
+    alert("Capture o rosto antes de salvar!");
+    return;
 
     const data = {
       name: name.trim(),
       belt,
       degrees: Number(degrees),
-      descriptorArray,
+      descriptorArray:
+        Array.isArray(descriptorArray) && Array.isArray(descriptorArray[0])
+        ? descriptorArray
+        : Array.isArray(descriptorArray)
+        ? [descriptorArray]
+        : [],
       updatedAt: Date.now()
     };
+
 
     try {
       if (student?.id) {
@@ -902,6 +916,7 @@ function StudentModal({ student, onClose, modelsLoaded }) {
       onClose();
     } catch (err) {
       console.error("Erro ao salvar cadastro:", err);
+      alert("Erro ao salvar: " + err.message);
     }
   };
 
