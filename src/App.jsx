@@ -35,6 +35,39 @@ const getPublicPath = (collectionName) => collection(db, 'artifacts', appId, 'pu
 // ============================================================================
 const MODELS_URL = 'https://cdn.jsdelivr.net/npm/@vladmandic/face-api/model/';
 
+
+// ============================================================================
+// CONFIGURACAO DO RECONHECIMENTO FACIAL
+// ============================================================================
+const REQUIRED_BIOMETRIC_SAMPLES = 5;
+const AUTO_MATCH_THRESHOLD = 0.62;
+const REVIEW_MATCH_THRESHOLD = 0.68;
+
+function getStoredDescriptors(student) {
+  if (Array.isArray(student?.descriptorArrays) && student.descriptorArrays.length > 0) {
+    return student.descriptorArrays.filter(descriptor =>
+      Array.isArray(descriptor) &&
+      descriptor.length === 128 &&
+      descriptor.every(Number.isFinite)
+    );
+  }
+
+  // Compatibilidade com alunos cadastrados no formato antigo
+  if (
+    Array.isArray(student?.descriptorArray) &&
+    student.descriptorArray.length === 128 &&
+    student.descriptorArray.every(Number.isFinite)
+  ) {
+    return [student.descriptorArray];
+  }
+
+  return [];
+}
+
+function hasStudentBiometrics(student) {
+  return getStoredDescriptors(student).length > 0;
+}
+
 // ============================================================================
 // FUNÇÃO AUXILIAR PARA EXPORTAR EXCEL (CSV FORMATADO PARA PORTUGUÊS)
 // ============================================================================
@@ -355,7 +388,7 @@ function StatCard({ title, value, subtitle, icon }) {
 // ABA: DASHBOARD VIEW
 // ============================================================================
 function DashboardView({ students, sessions }) {
-  const registeredFaces = students.filter(s => s.descriptorArray && s.descriptorArray.length > 0).length;
+  const registeredFaces = students.filter(hasStudentBiometrics).length;
   
   // Cálculo de dados demográficos de Faixas
   const beltDistribution = students.reduce((acc, student) => {
@@ -660,7 +693,7 @@ function StudentsView({ students, modelsLoaded, triggerConfirm }) {
       student.name,
       student.belt,
       student.degrees !== undefined ? `${student.degrees}º Grau` : "Sem Grau",
-      student.descriptorArray ? "Sim" : "Não"
+      hasStudentBiometrics(student) ? "Sim" : "Não"
     ]);
 
     exportToCSV(headers, rows, "CCMC_Lista_de_Alunos.csv");
@@ -721,7 +754,7 @@ function StudentsView({ students, modelsLoaded, triggerConfirm }) {
             
             <div className="mt-auto pt-4 border-t border-gray-100 flex items-center justify-between">
               <div className="flex items-center gap-1.5 text-sm">
-                {student.descriptorArray ? (
+                {hasStudentBiometrics(student) ? (
                   <><CheckCircle2 size={16} className="text-green-500" /><span className="text-green-700 font-medium">Rosto Cadastrado</span></>
                 ) : (
                   <><AlertCircle size={16} className="text-amber-500" /><span className="text-amber-700 font-medium">Sem biometria</span></>
@@ -772,18 +805,31 @@ function StudentModal({ student, onClose, modelsLoaded }) {
   const [name, setName] = useState(student?.name || '');
   const [belt, setBelt] = useState(student?.belt || 'Branca');
   const [degrees, setDegrees] = useState(student?.degrees !== undefined ? student.degrees : 0);
-  
-  // Face capture states
+
   const [isCapturing, setIsCapturing] = useState(false);
-  const [facingMode, setFacingMode] = useState('user'); // 'user' (frontal) ou 'environment' (traseira)
+  const [facingMode, setFacingMode] = useState('user');
   const [captureStatus, setCaptureStatus] = useState('');
-  const [descriptorArray, setDescriptorArray] = useState(student?.descriptorArray || null);
-  
+  const [descriptorArrays, setDescriptorArrays] = useState(() => getStoredDescriptors(student));
+  const [captureCount, setCaptureCount] = useState(() => getStoredDescriptors(student).length);
+
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
   const streamRef = useRef(null);
+  const captureInProgressRef = useRef(false);
+  const lastCaptureRef = useRef(0);
+  const isCapturingRef = useRef(false);
+  const sampleCountRef = useRef(getStoredDescriptors(student).length);
+
+  const instructions = [
+    'Olhe diretamente para a camera.',
+    'Vire levemente o rosto para a esquerda.',
+    'Vire levemente o rosto para a direita.',
+    'Olhe um pouco para cima.',
+    'Olhe um pouco para baixo.'
+  ];
 
   const stopCamera = useCallback(() => {
+    isCapturingRef.current = false;
     if (streamRef.current) {
       streamRef.current.getTracks().forEach(track => track.stop());
       streamRef.current = null;
@@ -791,97 +837,156 @@ function StudentModal({ student, onClose, modelsLoaded }) {
     setIsCapturing(false);
   }, []);
 
-  useEffect(() => {
-    return () => stopCamera(); // Limpeza ao desmontar componente
-  }, [stopCamera]);
+  useEffect(() => () => stopCamera(), [stopCamera]);
 
-  const startCamera = async (mode = facingMode) => {
+  const openCamera = async (mode, resetSamples = false) => {
     if (!modelsLoaded) return;
+
+    if (resetSamples) {
+      setDescriptorArrays([]);
+      setCaptureCount(0);
+      sampleCountRef.current = 0;
+      lastCaptureRef.current = 0;
+      captureInProgressRef.current = false;
+    }
+
+    setFacingMode(mode);
     setIsCapturing(true);
-    setCaptureStatus('Iniciando câmera...');
+    isCapturingRef.current = true;
+    setCaptureStatus('Iniciando camera...');
+
     try {
       if (streamRef.current) {
         streamRef.current.getTracks().forEach(track => track.stop());
       }
 
-      const stream = await navigator.mediaDevices.getUserMedia({ 
-        video: { facingMode: mode } 
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          facingMode: { ideal: mode },
+          width: { ideal: 1280 },
+          height: { ideal: 720 }
+        },
+        audio: false
       });
+
       streamRef.current = stream;
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-      }
-      setCaptureStatus(`Câmera ${mode === 'user' ? 'Frontal' : 'Traseira'} ativa. Aguarde a detecção...`);
+      if (videoRef.current) videoRef.current.srcObject = stream;
+
+      setCaptureStatus(instructions[sampleCountRef.current] || 'Mantenha o rosto visivel.');
     } catch (err) {
       console.error(err);
-      setCaptureStatus('Erro ao acessar a câmera selecionada.');
+      isCapturingRef.current = false;
       setIsCapturing(false);
+      setCaptureStatus('Erro ao acessar a camera selecionada.');
     }
   };
 
+  const startBiometricCapture = mode => openCamera(mode, true);
+
   const toggleCameraFacing = () => {
     const nextMode = facingMode === 'user' ? 'environment' : 'user';
-    setFacingMode(nextMode);
-    startCamera(nextMode);
+    openCamera(nextMode, false);
   };
 
-  const handleVideoPlay = async () => {
-    if (!videoRef.current || !isCapturing) return;
-
+  const handleVideoPlay = () => {
     const detectFace = async () => {
-      if (!videoRef.current || videoRef.current.paused || videoRef.current.ended || !isCapturing) return;
+      const video = videoRef.current;
+      if (!video || video.paused || video.ended || !isCapturingRef.current) return;
 
       try {
+        const detectorOptions = new window.faceapi.SsdMobilenetv1Options({
+          minConfidence: 0.7
+        });
+
         const detection = await window.faceapi
-          .detectSingleFace(videoRef.current)
+          .detectSingleFace(video, detectorOptions)
           .withFaceLandmarks()
           .withFaceDescriptor();
 
         if (detection) {
-          const displaySize = { width: videoRef.current.videoWidth, height: videoRef.current.videoHeight };
-          if (canvasRef.current) {
+          const displaySize = {
+            width: video.clientWidth || video.videoWidth,
+            height: video.clientHeight || video.videoHeight
+          };
+
+          if (canvasRef.current && displaySize.width && displaySize.height) {
             window.faceapi.matchDimensions(canvasRef.current, displaySize);
-            const resizedDetection = window.faceapi.resizeResults(detection, displaySize);
-            canvasRef.current.getContext('2d').clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
-            window.faceapi.draw.drawDetections(canvasRef.current, resizedDetection);
+            const resized = window.faceapi.resizeResults(detection, displaySize);
+            const ctx = canvasRef.current.getContext('2d');
+            ctx.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
+            window.faceapi.draw.drawDetections(canvasRef.current, resized);
           }
 
-          if (detection.detection.score > 0.8) {
-             setCaptureStatus('Rosto detectado com sucesso! Processando biometria...');
-             const descArray = Array.from(detection.descriptor);
-             setDescriptorArray(descArray);
-             setTimeout(() => {
-               stopCamera();
-               setCaptureStatus('Biometria Facial salva temporariamente. Salve o cadastro.');
-             }, 1000);
-             return;
+          const videoArea = Math.max(1, video.videoWidth * video.videoHeight);
+          const box = detection.detection.box;
+          const faceRatio = (box.width * box.height) / videoArea;
+
+          if (faceRatio < 0.08) {
+            setCaptureStatus('Aproxime o rosto da camera.');
+          } else if (detection.detection.score >= 0.85) {
+            const now = Date.now();
+            const canCapture =
+              now - lastCaptureRef.current >= 1000 &&
+              !captureInProgressRef.current &&
+              sampleCountRef.current < REQUIRED_BIOMETRIC_SAMPLES;
+
+            if (canCapture) {
+              captureInProgressRef.current = true;
+              lastCaptureRef.current = now;
+              const descriptor = Array.from(detection.descriptor);
+
+              setDescriptorArrays(previous => {
+                const updated = [...previous, descriptor].slice(0, REQUIRED_BIOMETRIC_SAMPLES);
+                const count = updated.length;
+                sampleCountRef.current = count;
+                setCaptureCount(count);
+
+                if (count >= REQUIRED_BIOMETRIC_SAMPLES) {
+                  setCaptureStatus(`${count} amostras capturadas. Biometria pronta para salvar.`);
+                  setTimeout(stopCamera, 500);
+                } else {
+                  setCaptureStatus(`Amostra ${count} de ${REQUIRED_BIOMETRIC_SAMPLES} capturada. ${instructions[count]}`);
+                }
+                return updated;
+              });
+
+              setTimeout(() => {
+                captureInProgressRef.current = false;
+              }, 800);
+            }
           }
         } else {
-           if (canvasRef.current) {
-               canvasRef.current.getContext('2d').clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
-           }
+          setCaptureStatus('Posicione apenas um rosto no centro da camera.');
+          if (canvasRef.current) {
+            const ctx = canvasRef.current.getContext('2d');
+            ctx.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
+          }
         }
       } catch (err) {
-        console.error("Erro na detecção:", err);
+        console.error('Erro na deteccao:', err);
       }
-      
-      if (isCapturing) {
-        requestAnimationFrame(detectFace);
-      }
+
+      if (isCapturingRef.current) requestAnimationFrame(detectFace);
     };
 
     detectFace();
   };
 
-  const handleSave = async (e) => {
+  const handleSave = async e => {
     e.preventDefault();
     if (!name.trim()) return;
+
+    const validDescriptors = descriptorArrays
+      .filter(descriptor => Array.isArray(descriptor) && descriptor.length === 128)
+      .slice(0, REQUIRED_BIOMETRIC_SAMPLES);
 
     const data = {
       name: name.trim(),
       belt,
       degrees: Number(degrees),
-      descriptorArray,
+      descriptorArrays: validDescriptors,
+      descriptorArray: validDescriptors[0] || null,
+      biometricSamples: validDescriptors.length,
       updatedAt: Date.now()
     };
 
@@ -894,7 +999,7 @@ function StudentModal({ student, onClose, modelsLoaded }) {
       }
       onClose();
     } catch (err) {
-      console.error("Erro ao salvar cadastro:", err);
+      console.error('Erro ao salvar cadastro:', err);
     }
   };
 
@@ -903,116 +1008,78 @@ function StudentModal({ student, onClose, modelsLoaded }) {
       <div className="bg-white rounded-2xl shadow-xl w-full max-w-lg overflow-hidden flex flex-col max-h-[90vh]">
         <div className="px-6 py-4 border-b flex justify-between items-center bg-gray-50">
           <h3 className="font-bold text-xl text-gray-800">{student ? 'Editar Aluno' : 'Novo Aluno'}</h3>
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-700">
-            <X size={24} />
-          </button>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-700"><X size={24} /></button>
         </div>
 
         <div className="p-6 overflow-y-auto flex-1">
           <form id="student-form" onSubmit={handleSave} className="space-y-4">
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">Nome Completo</label>
-              <input 
+              <input
                 type="text" required value={name} onChange={e => setName(e.target.value)}
                 className="w-full p-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-red-500 outline-none"
-                placeholder="Ex: João Silva"
+                placeholder="Ex: Joao Silva"
               />
             </div>
-            
+
             <div className="grid grid-cols-2 gap-4">
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Faixa</label>
-                <select 
-                  value={belt} onChange={e => setBelt(e.target.value)}
-                  className="w-full p-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-red-500 outline-none"
-                >
-                  {['Branca', 'Azul', 'Roxa', 'Marrom', 'Preta'].map(b => (
-                    <option key={b} value={b}>{b}</option>
-                  ))}
+                <select value={belt} onChange={e => setBelt(e.target.value)} className="w-full p-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 outline-none">
+                  {['Branca', 'Azul', 'Roxa', 'Marrom', 'Preta'].map(b => <option key={b} value={b}>{b}</option>)}
                 </select>
               </div>
-
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Graus (Listras)</label>
-                <select 
-                  value={degrees} onChange={e => setDegrees(Number(e.target.value))}
-                  className="w-full p-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-red-500 outline-none"
-                >
-                  {[0, 1, 2, 3, 4].map(g => (
-                    <option key={g} value={g}>{g === 0 ? 'Sem Grau (Lisa)' : `${g}º Grau`}</option>
-                  ))}
+                <select value={degrees} onChange={e => setDegrees(Number(e.target.value))} className="w-full p-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 outline-none">
+                  {[0, 1, 2, 3, 4].map(g => <option key={g} value={g}>{g === 0 ? 'Sem Grau (Lisa)' : `${g} Grau`}</option>)}
                 </select>
               </div>
             </div>
 
             <div className="border-t pt-4 mt-4">
               <label className="block text-sm font-medium text-gray-700 mb-2">Biometria Facial (IA)</label>
-              
+
               {!isCapturing ? (
                 <div className="space-y-3">
-                  {descriptorArray ? (
+                  {descriptorArrays.length > 0 ? (
                     <div className="bg-green-50 text-green-800 p-3 rounded-lg border border-green-200 flex items-center gap-2 text-sm font-medium">
-                      <CheckCircle2 size={18} /> Assinatura facial gravada no sistema.
+                      <CheckCircle2 size={18} /> {descriptorArrays.length} de {REQUIRED_BIOMETRIC_SAMPLES} amostras faciais gravadas.
                     </div>
                   ) : (
                     <div className="bg-amber-50 text-amber-800 p-3 rounded-lg border border-amber-200 flex items-start gap-2 text-sm">
-                      <AlertCircle size={18} className="shrink-0 mt-0.5" /> 
-                      Sem biometria. A IA não conseguirá identificar este aluno nas fotos de turma.
+                      <AlertCircle size={18} className="shrink-0 mt-0.5" /> Sem biometria. A IA nao conseguira identificar este aluno.
                     </div>
                   )}
-                  
+
+                  {descriptorArrays.length === 1 && student && (
+                    <p className="text-xs text-amber-700">Cadastro antigo detectado. Refaça a biometria para registrar 5 angulos e melhorar a precisao.</p>
+                  )}
+
                   <div className="flex gap-2">
-                    <button 
-                      type="button" 
-                      onClick={() => startCamera('user')}
-                      disabled={!modelsLoaded}
-                      className="flex-1 flex justify-center items-center gap-2 bg-gray-100 hover:bg-gray-200 text-gray-800 border border-gray-300 py-2.5 rounded-lg font-medium transition-colors disabled:opacity-50 text-xs"
-                    >
-                      <Camera size={16} />
-                      Usar Frontal (Selfie)
+                    <button type="button" onClick={() => startBiometricCapture('user')} disabled={!modelsLoaded} className="flex-1 flex justify-center items-center gap-2 bg-gray-100 hover:bg-gray-200 text-gray-800 border border-gray-300 py-2.5 rounded-lg font-medium disabled:opacity-50 text-xs">
+                      <Camera size={16} /> Usar Frontal
                     </button>
-                    <button 
-                      type="button" 
-                      onClick={() => startCamera('environment')}
-                      disabled={!modelsLoaded}
-                      className="flex-1 flex justify-center items-center gap-2 bg-gray-100 hover:bg-gray-200 text-gray-800 border border-gray-300 py-2.5 rounded-lg font-medium transition-colors disabled:opacity-50 text-xs"
-                    >
-                      <Camera size={16} />
-                      Usar Traseira
+                    <button type="button" onClick={() => startBiometricCapture('environment')} disabled={!modelsLoaded} className="flex-1 flex justify-center items-center gap-2 bg-gray-100 hover:bg-gray-200 text-gray-800 border border-gray-300 py-2.5 rounded-lg font-medium disabled:opacity-50 text-xs">
+                      <Camera size={16} /> Usar Traseira
                     </button>
                   </div>
-                  {!modelsLoaded && <p className="text-xs text-center text-gray-500">Aguarde a IA carregar para usar a câmera.</p>}
+                  {!modelsLoaded && <p className="text-xs text-center text-gray-500">Aguarde a IA carregar.</p>}
                 </div>
               ) : (
                 <div className="space-y-3">
-                  <div className="relative w-full bg-black rounded-lg overflow-hidden aspect-square md:aspect-video flex items-center justify-center">
-                    <video 
-                      ref={videoRef} 
-                      autoPlay 
-                      muted 
-                      playsInline
-                      onPlay={handleVideoPlay}
-                      className="absolute inset-0 w-full h-full object-cover"
-                    />
-                    <canvas ref={canvasRef} className="absolute inset-0 w-full h-full object-cover pointer-events-none" />
-                    
-                    {/* Botão flutuante para alternar câmera em tempo real */}
-                    <button
-                      type="button"
-                      onClick={toggleCameraFacing}
-                      className="absolute bottom-3 right-3 bg-white/90 hover:bg-white text-gray-800 p-2.5 rounded-full shadow-lg transition-transform hover:scale-105 active:scale-95 flex items-center gap-1 text-xs font-semibold"
-                    >
-                      <RefreshCw size={16} /> Alternar Câmera
+                  <div className="relative w-full bg-black rounded-lg overflow-hidden aspect-video flex items-center justify-center">
+                    <video ref={videoRef} autoPlay muted playsInline onPlay={handleVideoPlay} className="absolute inset-0 w-full h-full object-cover" />
+                    <canvas ref={canvasRef} className="absolute inset-0 w-full h-full pointer-events-none" />
+                    <div className="absolute top-3 left-3 bg-black/70 text-white px-3 py-1 rounded-full text-xs font-bold">
+                      {captureCount}/{REQUIRED_BIOMETRIC_SAMPLES}
+                    </div>
+                    <button type="button" onClick={toggleCameraFacing} className="absolute bottom-3 right-3 bg-white/90 text-gray-800 p-2.5 rounded-full shadow-lg flex items-center gap-1 text-xs font-semibold">
+                      <RefreshCw size={16} /> Alternar
                     </button>
                   </div>
-                  <p className="text-sm text-center font-medium text-blue-600 animate-pulse">{captureStatus}</p>
-                  <button 
-                    type="button" 
-                    onClick={stopCamera}
-                    className="w-full bg-red-100 hover:bg-red-200 text-red-700 py-2 rounded-lg font-medium transition-colors"
-                  >
-                    Cancelar Câmera
-                  </button>
+                  <p className="text-sm text-center font-medium text-blue-600">{captureStatus}</p>
+                  <button type="button" onClick={stopCamera} className="w-full bg-red-100 hover:bg-red-200 text-red-700 py-2 rounded-lg font-medium">Cancelar Camera</button>
                 </div>
               )}
             </div>
@@ -1020,12 +1087,8 @@ function StudentModal({ student, onClose, modelsLoaded }) {
         </div>
 
         <div className="px-6 py-4 border-t bg-gray-50 flex justify-end gap-3">
-          <button type="button" onClick={onClose} className="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded-lg font-medium">
-            Cancelar
-          </button>
-          <button type="submit" form="student-form" className="px-5 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg font-medium shadow-sm">
-            Salvar Aluno
-          </button>
+          <button type="button" onClick={onClose} className="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded-lg font-medium">Cancelar</button>
+          <button type="submit" form="student-form" className="px-5 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg font-medium shadow-sm">Salvar Aluno</button>
         </div>
       </div>
     </div>
@@ -1081,8 +1144,13 @@ function AttendanceView({ students, modelsLoaded, triggerAlert }) {
         classStreamRef.current.getTracks().forEach(track => track.stop());
       }
 
-      const stream = await navigator.mediaDevices.getUserMedia({ 
-        video: { facingMode: mode } 
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          facingMode: { ideal: mode },
+          width: { ideal: 1920 },
+          height: { ideal: 1080 }
+        },
+        audio: false
       });
       classStreamRef.current = stream;
       if (classVideoRef.current) {
@@ -1141,87 +1209,147 @@ function AttendanceView({ students, modelsLoaded, triggerAlert }) {
   // Processar Reconhecimento com IA
   const processAttendance = async () => {
     if (!imageRef.current || !modelsLoaded) return;
-    
+
     setIsProcessing(true);
     setProgressText('1. Procurando rostos na foto da turma...');
-    
+
     try {
-      const detections = await window.faceapi
-        .detectAllFaces(imageRef.current)
-        .withFaceLandmarks()
-        .withFaceDescriptors();
-        
-      setDetectedFacesCount(detections.length);
-      
-      if (detections.length === 0) {
-        setProgressText('Nenhum rosto encontrado na foto. Tente tirar a foto mais perto da turma ou em ambiente mais claro.');
-        setIsProcessing(false);
-        return;
-      }
-
-      setProgressText(`2. Buscando assinaturas faciais cadastradas (${students.length})...`);
-      
-      const labeledDescriptors = students
-        .filter(s => s.descriptorArray && s.descriptorArray.length === 128)
-        .map(s => {
-           const float32Array = new Float32Array(s.descriptorArray);
-           return new window.faceapi.LabeledFaceDescriptors(s.id, [float32Array]);
-        });
-
-      if (labeledDescriptors.length === 0) {
-        setProgressText('Erro: Nenhum aluno possui biometria facial gravada no sistema.');
-        setIsProcessing(false);
-        return;
-      }
-
-      const faceMatcher = new window.faceapi.FaceMatcher(labeledDescriptors, 0.6);
-      setProgressText(`3. Cruzando os ${detections.length} rostos detectados com a base de dados do CCMC...`);
-
-      const matchedIds = new Set();
-      const resultsForCanvas = [];
-
-      detections.forEach(fd => {
-        const bestMatch = faceMatcher.findBestMatch(fd.descriptor);
-        resultsForCanvas.push({ detection: fd, match: bestMatch });
-        if (bestMatch.label !== 'unknown') {
-          matchedIds.add(bestMatch.label);
-        }
+      const detectorOptions = new window.faceapi.SsdMobilenetv1Options({
+        minConfidence: 0.45
       });
 
-      // Desenha quadrados e tags sobre o rosto dos alunos detectados
+      const detections = await window.faceapi
+        .detectAllFaces(imageRef.current, detectorOptions)
+        .withFaceLandmarks()
+        .withFaceDescriptors();
+
+      setDetectedFacesCount(detections.length);
+
+      if (detections.length === 0) {
+        setProgressText('Nenhum rosto encontrado. Tire a foto mais perto e com melhor iluminacao.');
+        return;
+      }
+
+      setProgressText(`2. Carregando biometrias de ${students.length} alunos...`);
+
+      const labeledDescriptors = students
+        .map(student => {
+          const descriptors = getStoredDescriptors(student)
+            .map(descriptor => new Float32Array(descriptor));
+
+          return descriptors.length > 0
+            ? new window.faceapi.LabeledFaceDescriptors(student.id, descriptors)
+            : null;
+        })
+        .filter(Boolean);
+
+      if (labeledDescriptors.length === 0) {
+        setProgressText('Erro: nenhum aluno possui biometria facial valida.');
+        return;
+      }
+
+      // O matcher usa o limite maior para permitir uma faixa de revisao manual.
+      const faceMatcher = new window.faceapi.FaceMatcher(
+        labeledDescriptors,
+        REVIEW_MATCH_THRESHOLD
+      );
+
+      setProgressText(`3. Comparando ${detections.length} rostos com a base do CCMC...`);
+
+      const bestMatchByStudent = new Map();
+      const resultsForCanvas = [];
+
+      detections.forEach(detection => {
+        const match = faceMatcher.findBestMatch(detection.descriptor);
+        let status = 'unknown';
+
+        if (match.label !== 'unknown') {
+          status = match.distance <= AUTO_MATCH_THRESHOLD ? 'confirmed' : 'review';
+
+          const previous = bestMatchByStudent.get(match.label);
+          if (!previous || match.distance < previous.distance) {
+            bestMatchByStudent.set(match.label, {
+              distance: match.distance,
+              status
+            });
+          }
+        }
+
+        resultsForCanvas.push({ detection, match, status });
+      });
+
+      const matchedIds = new Set(
+        [...bestMatchByStudent.entries()]
+          .filter(([, result]) => result.status === 'confirmed')
+          .map(([studentId]) => studentId)
+      );
+
+      const reviewIds = new Set(
+        [...bestMatchByStudent.entries()]
+          .filter(([, result]) => result.status === 'review')
+          .map(([studentId]) => studentId)
+      );
+
       if (canvasRef.current && imageRef.current) {
-        const displaySize = { width: imageRef.current.width, height: imageRef.current.height };
+        const displaySize = {
+          width: imageRef.current.clientWidth,
+          height: imageRef.current.clientHeight
+        };
+
         window.faceapi.matchDimensions(canvasRef.current, displaySize);
-        
-        resultsForCanvas.forEach(({ detection, match }) => {
-          const text = match.label === 'unknown' ? 'Não Identificado' : students.find(s => s.id === match.label)?.name.split(' ')[0] || 'Aluno';
-          const color = match.label === 'unknown' ? 'red' : 'green';
-          
-          const box = detection.detection.box;
-          const drawBox = new window.faceapi.draw.DrawBox(box, { label: text, boxColor: color });
-          drawBox.draw(canvasRef.current);
+        const resizedDetections = window.faceapi.resizeResults(
+          resultsForCanvas.map(item => item.detection),
+          displaySize
+        );
+
+        const ctx = canvasRef.current.getContext('2d');
+        ctx.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
+
+        resizedDetections.forEach((resizedDetection, index) => {
+          const { match, status } = resultsForCanvas[index];
+          const student = students.find(item => item.id === match.label);
+
+          const label = status === 'unknown'
+            ? 'Nao identificado'
+            : `${student?.name?.split(' ')[0] || 'Aluno'} ${match.distance.toFixed(2)}${status === 'review' ? ' - revisar' : ''}`;
+
+          const boxColor = status === 'confirmed'
+            ? 'green'
+            : status === 'review'
+              ? 'orange'
+              : 'red';
+
+          new window.faceapi.draw.DrawBox(resizedDetection.detection.box, {
+            label,
+            boxColor
+          }).draw(canvasRef.current);
         });
       }
 
-      setProgressText('4. Cruzamento efetuado! Montando a chamada...');
-      
-      const newList = students.map(s => ({
-        id: s.id,
-        name: s.name,
-        belt: s.belt,
-        degrees: s.degrees || 0,
-        hasBiometrics: !!s.descriptorArray,
-        present: matchedIds.has(s.id)
-      }));
-      
+      setProgressText('4. Montando a lista de chamada...');
+
+      const newList = students.map(student => {
+        const result = bestMatchByStudent.get(student.id);
+        return {
+          id: student.id,
+          name: student.name,
+          belt: student.belt,
+          degrees: student.degrees || 0,
+          hasBiometrics: hasStudentBiometrics(student),
+          present: matchedIds.has(student.id),
+          needsReview: reviewIds.has(student.id),
+          matchDistance: result?.distance ?? null
+        };
+      });
+
       newList.sort((a, b) => {
-        if (a.present === b.present) return a.name.localeCompare(b.name);
-        return a.present ? -1 : 1; // Coloca quem está presente no topo da listagem
+        if (a.present !== b.present) return a.present ? -1 : 1;
+        if (a.needsReview !== b.needsReview) return a.needsReview ? -1 : 1;
+        return a.name.localeCompare(b.name);
       });
 
       setAttendanceList(newList);
-      setProgressText('Concluído!');
-
+      setProgressText('Concluido! Resultados em laranja devem ser conferidos manualmente.');
     } catch (err) {
       console.error(err);
       setProgressText('Erro no processamento de reconhecimento facial.');
@@ -1231,7 +1359,7 @@ function AttendanceView({ students, modelsLoaded, triggerAlert }) {
   };
 
   const togglePresence = (id) => {
-    setAttendanceList(prev => prev.map(s => s.id === id ? { ...s, present: !s.present } : s));
+    setAttendanceList(prev => prev.map(s => s.id === id ? { ...s, present: !s.present, needsReview: false } : s));
   };
 
   // Salvar a chamada no banco de dados Firebase
@@ -1436,9 +1564,11 @@ function AttendanceView({ students, modelsLoaded, triggerAlert }) {
                     key={student.id}
                     onClick={() => togglePresence(student.id)}
                     className={`w-full flex items-center justify-between p-3 rounded-lg border transition-colors ${
-                      student.present 
-                        ? 'bg-green-50 border-green-200' 
-                        : 'bg-white border-transparent hover:bg-gray-50'
+                      student.present
+                        ? 'bg-green-50 border-green-200'
+                        : student.needsReview
+                          ? 'bg-amber-50 border-amber-300'
+                          : 'bg-white border-transparent hover:bg-gray-50'
                     }`}
                   >
                     <div className="flex items-center gap-3">
@@ -1459,6 +1589,11 @@ function AttendanceView({ students, modelsLoaded, triggerAlert }) {
                         {!student.hasBiometrics && (
                           <p className="text-[10px] text-amber-600 flex items-center gap-1 mt-0.5">
                             <AlertCircle size={10} /> Sem biometria cadastrada
+                          </p>
+                        )}
+                        {student.needsReview && (
+                          <p className="text-[10px] text-amber-700 flex items-center gap-1 mt-0.5 font-semibold">
+                            <AlertCircle size={10} /> Possivel correspondencia ({student.matchDistance?.toFixed(2)}). Toque para confirmar.
                           </p>
                         )}
                       </div>
