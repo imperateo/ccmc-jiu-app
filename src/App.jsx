@@ -44,6 +44,18 @@ const AUTO_MATCH_THRESHOLD = 0.62;
 const REVIEW_MATCH_THRESHOLD = 0.68;
 
 function getStoredDescriptors(student) {
+  // Formato novo e seguro para o Firestore: array de objetos, cada um contendo um vetor.
+  if (Array.isArray(student?.descriptorSamples) && student.descriptorSamples.length > 0) {
+    return student.descriptorSamples
+      .map(sample => sample?.values)
+      .filter(descriptor =>
+        Array.isArray(descriptor) &&
+        descriptor.length === 128 &&
+        descriptor.every(Number.isFinite)
+      );
+  }
+
+  // Compatibilidade temporaria com descriptorArrays, caso exista em outra base.
   if (Array.isArray(student?.descriptorArrays) && student.descriptorArrays.length > 0) {
     return student.descriptorArrays.filter(descriptor =>
       Array.isArray(descriptor) &&
@@ -811,6 +823,9 @@ function StudentModal({ student, onClose, modelsLoaded }) {
   const [captureStatus, setCaptureStatus] = useState('');
   const [descriptorArrays, setDescriptorArrays] = useState(() => getStoredDescriptors(student));
   const [captureCount, setCaptureCount] = useState(() => getStoredDescriptors(student).length);
+  const [isFaceReady, setIsFaceReady] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+  const [saveError, setSaveError] = useState('');
 
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
@@ -819,6 +834,7 @@ function StudentModal({ student, onClose, modelsLoaded }) {
   const lastCaptureRef = useRef(0);
   const isCapturingRef = useRef(false);
   const sampleCountRef = useRef(getStoredDescriptors(student).length);
+  const latestDetectionRef = useRef(null);
 
   const instructions = [
     'Olhe diretamente para a camera.',
@@ -848,6 +864,8 @@ function StudentModal({ student, onClose, modelsLoaded }) {
       sampleCountRef.current = 0;
       lastCaptureRef.current = 0;
       captureInProgressRef.current = false;
+      latestDetectionRef.current = null;
+      setIsFaceReady(false);
     }
 
     setFacingMode(mode);
@@ -922,40 +940,23 @@ function StudentModal({ student, onClose, modelsLoaded }) {
           const faceRatio = (box.width * box.height) / videoArea;
 
           if (faceRatio < 0.08) {
+            latestDetectionRef.current = null;
+            setIsFaceReady(false);
             setCaptureStatus('Aproxime o rosto da camera.');
           } else if (detection.detection.score >= 0.85) {
-            const now = Date.now();
-            const canCapture =
-              now - lastCaptureRef.current >= 1000 &&
-              !captureInProgressRef.current &&
-              sampleCountRef.current < REQUIRED_BIOMETRIC_SAMPLES;
-
-            if (canCapture) {
-              captureInProgressRef.current = true;
-              lastCaptureRef.current = now;
-              const descriptor = Array.from(detection.descriptor);
-
-              setDescriptorArrays(previous => {
-                const updated = [...previous, descriptor].slice(0, REQUIRED_BIOMETRIC_SAMPLES);
-                const count = updated.length;
-                sampleCountRef.current = count;
-                setCaptureCount(count);
-
-                if (count >= REQUIRED_BIOMETRIC_SAMPLES) {
-                  setCaptureStatus(`${count} amostras capturadas. Biometria pronta para salvar.`);
-                  setTimeout(stopCamera, 500);
-                } else {
-                  setCaptureStatus(`Amostra ${count} de ${REQUIRED_BIOMETRIC_SAMPLES} capturada. ${instructions[count]}`);
-                }
-                return updated;
-              });
-
-              setTimeout(() => {
-                captureInProgressRef.current = false;
-              }, 800);
-            }
+            latestDetectionRef.current = detection;
+            setIsFaceReady(true);
+            setCaptureStatus(
+              `${instructions[sampleCountRef.current] || 'Mantenha o rosto visivel.'} Quando estiver na posicao, toque em Capturar amostra.`
+            );
+          } else {
+            latestDetectionRef.current = null;
+            setIsFaceReady(false);
+            setCaptureStatus('Melhore a iluminacao e mantenha o rosto firme.');
           }
         } else {
+          latestDetectionRef.current = null;
+          setIsFaceReady(false);
           setCaptureStatus('Posicione apenas um rosto no centro da camera.');
           if (canvasRef.current) {
             const ctx = canvasRef.current.getContext('2d');
@@ -972,6 +973,41 @@ function StudentModal({ student, onClose, modelsLoaded }) {
     detectFace();
   };
 
+  const captureCurrentSample = () => {
+    const detection = latestDetectionRef.current;
+    if (!detection || !isFaceReady || captureInProgressRef.current) {
+      setCaptureStatus('Aguarde o rosto ficar bem enquadrado antes de capturar.');
+      return;
+    }
+
+    if (sampleCountRef.current >= REQUIRED_BIOMETRIC_SAMPLES) return;
+
+    captureInProgressRef.current = true;
+    const descriptor = Array.from(detection.descriptor);
+
+    setDescriptorArrays(previous => {
+      const updated = [...previous, descriptor].slice(0, REQUIRED_BIOMETRIC_SAMPLES);
+      const count = updated.length;
+      sampleCountRef.current = count;
+      setCaptureCount(count);
+
+      if (count >= REQUIRED_BIOMETRIC_SAMPLES) {
+        setCaptureStatus('5 amostras capturadas. Biometria pronta para salvar.');
+        setTimeout(stopCamera, 350);
+      } else {
+        setCaptureStatus(`Amostra ${count} salva. Agora: ${instructions[count]}`);
+      }
+
+      return updated;
+    });
+
+    latestDetectionRef.current = null;
+    setIsFaceReady(false);
+    setTimeout(() => {
+      captureInProgressRef.current = false;
+    }, 500);
+  };
+
   const handleSave = async e => {
     e.preventDefault();
     if (!name.trim()) return;
@@ -980,11 +1016,16 @@ function StudentModal({ student, onClose, modelsLoaded }) {
       .filter(descriptor => Array.isArray(descriptor) && descriptor.length === 128)
       .slice(0, REQUIRED_BIOMETRIC_SAMPLES);
 
+    setIsSaving(true);
+    setSaveError('');
+
     const data = {
       name: name.trim(),
       belt,
       degrees: Number(degrees),
-      descriptorArrays: validDescriptors,
+      // Firestore nao aceita arrays diretamente dentro de arrays.
+      // Por isso cada descritor fica dentro de um objeto { values: [...] }.
+      descriptorSamples: validDescriptors.map(values => ({ values })),
       descriptorArray: validDescriptors[0] || null,
       biometricSamples: validDescriptors.length,
       updatedAt: Date.now()
@@ -1000,18 +1041,21 @@ function StudentModal({ student, onClose, modelsLoaded }) {
       onClose();
     } catch (err) {
       console.error('Erro ao salvar cadastro:', err);
+      setSaveError(`Nao foi possivel salvar: ${err?.message || 'erro desconhecido'}`);
+    } finally {
+      setIsSaving(false);
     }
   };
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-fade-in">
-      <div className="bg-white rounded-2xl shadow-xl w-full max-w-lg overflow-hidden flex flex-col max-h-[90vh]">
+      <div className="bg-white rounded-2xl shadow-xl w-full max-w-2xl overflow-hidden flex flex-col max-h-[96vh]">
         <div className="px-6 py-4 border-b flex justify-between items-center bg-gray-50">
           <h3 className="font-bold text-xl text-gray-800">{student ? 'Editar Aluno' : 'Novo Aluno'}</h3>
           <button onClick={onClose} className="text-gray-400 hover:text-gray-700"><X size={24} /></button>
         </div>
 
-        <div className="p-6 overflow-y-auto flex-1">
+        <div className="p-3 sm:p-6 overflow-y-auto flex-1">
           <form id="student-form" onSubmit={handleSave} className="space-y-4">
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">Nome Completo</label>
@@ -1068,8 +1112,8 @@ function StudentModal({ student, onClose, modelsLoaded }) {
                 </div>
               ) : (
                 <div className="space-y-3">
-                  <div className="relative w-full bg-black rounded-lg overflow-hidden aspect-video flex items-center justify-center">
-                    <video ref={videoRef} autoPlay muted playsInline onPlay={handleVideoPlay} className="absolute inset-0 w-full h-full object-cover" />
+                  <div className="relative w-full max-w-md mx-auto bg-black rounded-xl overflow-hidden aspect-[3/4] sm:aspect-[4/5] md:aspect-[3/4] max-h-[68vh] flex items-center justify-center border-2 border-gray-800">
+                    <video ref={videoRef} autoPlay muted playsInline onPlay={handleVideoPlay} className="absolute inset-0 w-full h-full object-contain bg-black" />
                     <canvas ref={canvasRef} className="absolute inset-0 w-full h-full pointer-events-none" />
                     <div className="absolute top-3 left-3 bg-black/70 text-white px-3 py-1 rounded-full text-xs font-bold">
                       {captureCount}/{REQUIRED_BIOMETRIC_SAMPLES}
@@ -1078,6 +1122,15 @@ function StudentModal({ student, onClose, modelsLoaded }) {
                       <RefreshCw size={16} /> Alternar
                     </button>
                   </div>
+                  <button
+                    type="button"
+                    onClick={captureCurrentSample}
+                    disabled={!isFaceReady || captureCount >= REQUIRED_BIOMETRIC_SAMPLES}
+                    className="w-full bg-blue-600 hover:bg-blue-700 disabled:bg-gray-300 disabled:text-gray-500 text-white py-3 rounded-lg font-bold transition-colors"
+                  >
+                    <Camera size={18} className="inline mr-2" />
+                    Capturar amostra {Math.min(captureCount + 1, REQUIRED_BIOMETRIC_SAMPLES)} de {REQUIRED_BIOMETRIC_SAMPLES}
+                  </button>
                   <p className="text-sm text-center font-medium text-blue-600">{captureStatus}</p>
                   <button type="button" onClick={stopCamera} className="w-full bg-red-100 hover:bg-red-200 text-red-700 py-2 rounded-lg font-medium">Cancelar Camera</button>
                 </div>
@@ -1086,9 +1139,14 @@ function StudentModal({ student, onClose, modelsLoaded }) {
           </form>
         </div>
 
+        {saveError && (
+          <div className="mx-6 mb-2 p-3 bg-red-50 border border-red-200 text-red-700 rounded-lg text-sm">
+            {saveError}
+          </div>
+        )}
         <div className="px-6 py-4 border-t bg-gray-50 flex justify-end gap-3">
           <button type="button" onClick={onClose} className="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded-lg font-medium">Cancelar</button>
-          <button type="submit" form="student-form" className="px-5 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg font-medium shadow-sm">Salvar Aluno</button>
+          <button type="submit" form="student-form" disabled={isSaving} className="px-5 py-2 bg-red-600 hover:bg-red-700 disabled:bg-red-300 text-white rounded-lg font-medium shadow-sm">{isSaving ? 'Salvando...' : 'Salvar Aluno'}</button>
         </div>
       </div>
     </div>
