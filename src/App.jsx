@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from 'firebase/auth';
 import { 
@@ -40,8 +40,12 @@ const MODELS_URL = 'https://cdn.jsdelivr.net/npm/@vladmandic/face-api/model/';
 // CONFIGURACAO DO RECONHECIMENTO FACIAL
 // ============================================================================
 const REQUIRED_BIOMETRIC_SAMPLES = 5;
-const AUTO_MATCH_THRESHOLD = 0.62;
-const REVIEW_MATCH_THRESHOLD = 0.68;
+const AUTO_MATCH_THRESHOLD = 0.55;
+const REVIEW_MATCH_THRESHOLD = 0.63;
+const LIVE_DETECTION_INTERVAL = 180;
+const MAX_RECOGNITION_IMAGE_SIZE = 1280;
+const INDIVIDUAL_DETECTOR_OPTIONS = { inputSize: 320, scoreThreshold: 0.55 };
+const GROUP_DETECTOR_OPTIONS = { inputSize: 512, scoreThreshold: 0.35 };
 
 function getStoredDescriptors(student) {
   // Formato novo e seguro para o Firestore: array de objetos, cada um contendo um vetor.
@@ -78,6 +82,28 @@ function getStoredDescriptors(student) {
 
 function hasStudentBiometrics(student) {
   return getStoredDescriptors(student).length > 0;
+}
+
+function euclideanDistance(a, b) {
+  if (!a || !b || a.length !== b.length) return Number.POSITIVE_INFINITY;
+  let sum = 0;
+  for (let i = 0; i < a.length; i += 1) {
+    const d = a[i] - b[i];
+    sum += d * d;
+  }
+  return Math.sqrt(sum);
+}
+
+function resizeImageForRecognition(image, maxDimension = MAX_RECOGNITION_IMAGE_SIZE) {
+  const ow = image.naturalWidth || image.videoWidth || image.width;
+  const oh = image.naturalHeight || image.videoHeight || image.height;
+  const scale = Math.min(1, maxDimension / Math.max(ow, oh));
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.max(1, Math.round(ow * scale));
+  canvas.height = Math.max(1, Math.round(oh * scale));
+  const ctx = canvas.getContext('2d', { alpha: false });
+  ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
+  return canvas;
 }
 
 // ============================================================================
@@ -178,14 +204,12 @@ export default function App() {
           });
         }
 
-        setModelLoadingProgress('Baixando modelo de detecção...');
-        await window.faceapi.nets.ssdMobilenetv1.loadFromUri(MODELS_URL);
-        
-        setModelLoadingProgress('Baixando modelo de mapeamento facial...');
-        await window.faceapi.nets.faceLandmark68Net.loadFromUri(MODELS_URL);
-        
-        setModelLoadingProgress('Baixando modelo de reconhecimento...');
-        await window.faceapi.nets.faceRecognitionNet.loadFromUri(MODELS_URL);
+        setModelLoadingProgress('Carregando modelos de IA...');
+        await Promise.all([
+          window.faceapi.nets.tinyFaceDetector.loadFromUri(MODELS_URL),
+          window.faceapi.nets.faceLandmark68Net.loadFromUri(MODELS_URL),
+          window.faceapi.nets.faceRecognitionNet.loadFromUri(MODELS_URL)
+        ]);
 
         setModelsLoaded(true);
         setModelLoadingProgress('IA Pronta!');
@@ -835,6 +859,8 @@ function StudentModal({ student, onClose, modelsLoaded }) {
   const isCapturingRef = useRef(false);
   const sampleCountRef = useRef(getStoredDescriptors(student).length);
   const latestDetectionRef = useRef(null);
+  const lastDetectionTimeRef = useRef(0);
+  const detectionRunningRef = useRef(false);
 
   const instructions = [
     'Olhe diretamente para a camera.',
@@ -865,6 +891,8 @@ function StudentModal({ student, onClose, modelsLoaded }) {
       lastCaptureRef.current = 0;
       captureInProgressRef.current = false;
       latestDetectionRef.current = null;
+      lastDetectionTimeRef.current = 0;
+      detectionRunningRef.current = false;
       setIsFaceReady(false);
     }
 
@@ -907,26 +935,20 @@ function StudentModal({ student, onClose, modelsLoaded }) {
   };
 
   const handleVideoPlay = () => {
-    const detectFace = async () => {
+    const detectFace = async timestamp => {
       const video = videoRef.current;
       if (!video || video.paused || video.ended || !isCapturingRef.current) return;
-
+      if (timestamp - lastDetectionTimeRef.current < LIVE_DETECTION_INTERVAL || detectionRunningRef.current) {
+        requestAnimationFrame(detectFace);
+        return;
+      }
+      lastDetectionTimeRef.current = timestamp;
+      detectionRunningRef.current = true;
       try {
-        const detectorOptions = new window.faceapi.SsdMobilenetv1Options({
-          minConfidence: 0.7
-        });
-
-        const detection = await window.faceapi
-          .detectSingleFace(video, detectorOptions)
-          .withFaceLandmarks()
-          .withFaceDescriptor();
-
+        const options = new window.faceapi.TinyFaceDetectorOptions(INDIVIDUAL_DETECTOR_OPTIONS);
+        const detection = await window.faceapi.detectSingleFace(video, options).withFaceLandmarks().withFaceDescriptor();
         if (detection) {
-          const displaySize = {
-            width: video.clientWidth || video.videoWidth,
-            height: video.clientHeight || video.videoHeight
-          };
-
+          const displaySize = { width: video.clientWidth || video.videoWidth, height: video.clientHeight || video.videoHeight };
           if (canvasRef.current && displaySize.width && displaySize.height) {
             window.faceapi.matchDimensions(canvasRef.current, displaySize);
             const resized = window.faceapi.resizeResults(detection, displaySize);
@@ -934,45 +956,28 @@ function StudentModal({ student, onClose, modelsLoaded }) {
             ctx.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
             window.faceapi.draw.drawDetections(canvasRef.current, resized);
           }
-
-          const videoArea = Math.max(1, video.videoWidth * video.videoHeight);
+          const area = Math.max(1, video.videoWidth * video.videoHeight);
           const box = detection.detection.box;
-          const faceRatio = (box.width * box.height) / videoArea;
-
-          if (faceRatio < 0.08) {
-            latestDetectionRef.current = null;
-            setIsFaceReady(false);
-            setCaptureStatus('Aproxime o rosto da camera.');
-          } else if (detection.detection.score >= 0.85) {
-            latestDetectionRef.current = detection;
-            setIsFaceReady(true);
-            setCaptureStatus(
-              `${instructions[sampleCountRef.current] || 'Mantenha o rosto visivel.'} Quando estiver na posicao, toque em Capturar amostra.`
-            );
+          if ((box.width * box.height) / area < 0.08) {
+            latestDetectionRef.current = null; setIsFaceReady(false); setCaptureStatus('Aproxime o rosto da camera.');
+          } else if (detection.detection.score >= 0.75) {
+            latestDetectionRef.current = detection; setIsFaceReady(true);
+            setCaptureStatus(`${instructions[sampleCountRef.current] || 'Mantenha o rosto visivel.'} Quando estiver na posicao, toque em Capturar amostra.`);
           } else {
-            latestDetectionRef.current = null;
-            setIsFaceReady(false);
-            setCaptureStatus('Melhore a iluminacao e mantenha o rosto firme.');
+            latestDetectionRef.current = null; setIsFaceReady(false); setCaptureStatus('Melhore a iluminacao e mantenha o rosto firme.');
           }
         } else {
-          latestDetectionRef.current = null;
-          setIsFaceReady(false);
-          setCaptureStatus('Posicione apenas um rosto no centro da camera.');
-          if (canvasRef.current) {
-            const ctx = canvasRef.current.getContext('2d');
-            ctx.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
-          }
+          latestDetectionRef.current = null; setIsFaceReady(false); setCaptureStatus('Posicione apenas um rosto no centro da camera.');
+          if (canvasRef.current) canvasRef.current.getContext('2d').clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
         }
-      } catch (err) {
-        console.error('Erro na deteccao:', err);
+      } catch (err) { console.error('Erro na deteccao:', err); }
+      finally {
+        detectionRunningRef.current = false;
+        if (isCapturingRef.current) requestAnimationFrame(detectFace);
       }
-
-      if (isCapturingRef.current) requestAnimationFrame(detectFace);
     };
-
-    detectFace();
+    requestAnimationFrame(detectFace);
   };
-
   const captureCurrentSample = () => {
     const detection = latestDetectionRef.current;
     if (!detection || !isFaceReady || captureInProgressRef.current) {
@@ -1177,6 +1182,15 @@ function AttendanceView({ students, modelsLoaded, triggerAlert }) {
   const classStreamRef = useRef(null);
   const fileInputRef = useRef(null);
 
+  const faceMatcher = useMemo(() => {
+    if (!modelsLoaded || !window.faceapi) return null;
+    const labeled = students.map(student => {
+      const descriptors = getStoredDescriptors(student).map(values => new Float32Array(values));
+      return descriptors.length ? new window.faceapi.LabeledFaceDescriptors(student.id, descriptors) : null;
+    }).filter(Boolean);
+    return labeled.length ? new window.faceapi.FaceMatcher(labeled, REVIEW_MATCH_THRESHOLD) : null;
+  }, [students, modelsLoaded]);
+
   // Parar câmera ao vivo
   const stopClassCamera = useCallback(() => {
     if (classStreamRef.current) {
@@ -1232,13 +1246,12 @@ function AttendanceView({ students, modelsLoaded, triggerAlert }) {
     
     const video = classVideoRef.current;
     const canvas = document.createElement('canvas');
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
-    
-    const ctx = canvas.getContext('2d');
+    const scale = Math.min(1, 1600 / video.videoWidth);
+    canvas.width = Math.max(1, Math.round(video.videoWidth * scale));
+    canvas.height = Math.max(1, Math.round(video.videoHeight * scale));
+    const ctx = canvas.getContext('2d', { alpha: false });
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-    
-    const dataUrl = canvas.toDataURL('image/png');
+    const dataUrl = canvas.toDataURL('image/jpeg', 0.88);
     setImageSrc(dataUrl);
     stopClassCamera();
   };
@@ -1272,12 +1285,10 @@ function AttendanceView({ students, modelsLoaded, triggerAlert }) {
     setProgressText('1. Procurando rostos na foto da turma...');
 
     try {
-      const detectorOptions = new window.faceapi.SsdMobilenetv1Options({
-        minConfidence: 0.45
-      });
-
+      const detectorOptions = new window.faceapi.TinyFaceDetectorOptions(GROUP_DETECTOR_OPTIONS);
+      const recognitionInput = resizeImageForRecognition(imageRef.current);
       const detections = await window.faceapi
-        .detectAllFaces(imageRef.current, detectorOptions)
+        .detectAllFaces(recognitionInput, detectorOptions)
         .withFaceLandmarks()
         .withFaceDescriptors();
 
@@ -1290,50 +1301,29 @@ function AttendanceView({ students, modelsLoaded, triggerAlert }) {
 
       setProgressText(`2. Carregando biometrias de ${students.length} alunos...`);
 
-      const labeledDescriptors = students
-        .map(student => {
-          const descriptors = getStoredDescriptors(student)
-            .map(descriptor => new Float32Array(descriptor));
-
-          return descriptors.length > 0
-            ? new window.faceapi.LabeledFaceDescriptors(student.id, descriptors)
-            : null;
-        })
-        .filter(Boolean);
-
-      if (labeledDescriptors.length === 0) {
+      if (!faceMatcher) {
         setProgressText('Erro: nenhum aluno possui biometria facial valida.');
         return;
       }
 
-      // O matcher usa o limite maior para permitir uma faixa de revisao manual.
-      const faceMatcher = new window.faceapi.FaceMatcher(
-        labeledDescriptors,
-        REVIEW_MATCH_THRESHOLD
-      );
-
       setProgressText(`3. Comparando ${detections.length} rostos com a base do CCMC...`);
 
       const bestMatchByStudent = new Map();
-      const resultsForCanvas = [];
-
-      detections.forEach(detection => {
-        const match = faceMatcher.findBestMatch(detection.descriptor);
-        let status = 'unknown';
-
-        if (match.label !== 'unknown') {
-          status = match.distance <= AUTO_MATCH_THRESHOLD ? 'confirmed' : 'review';
-
-          const previous = bestMatchByStudent.get(match.label);
-          if (!previous || match.distance < previous.distance) {
-            bestMatchByStudent.set(match.label, {
-              distance: match.distance,
-              status
-            });
-          }
-        }
-
-        resultsForCanvas.push({ detection, match, status });
+      const resultsForCanvas = detections.map(detection => ({
+        detection,
+        match: faceMatcher.findBestMatch(detection.descriptor),
+        status: 'unknown'
+      }));
+      const candidates = resultsForCanvas.map((item, index) => ({ ...item, index }))
+        .filter(item => item.match.label !== 'unknown')
+        .sort((a, b) => a.match.distance - b.match.distance);
+      const assignedStudents = new Set();
+      candidates.forEach(candidate => {
+        if (assignedStudents.has(candidate.match.label)) return;
+        const status = candidate.match.distance <= AUTO_MATCH_THRESHOLD ? 'confirmed' : 'review';
+        resultsForCanvas[candidate.index].status = status;
+        assignedStudents.add(candidate.match.label);
+        bestMatchByStudent.set(candidate.match.label, { distance: candidate.match.distance, status });
       });
 
       const matchedIds = new Set(
