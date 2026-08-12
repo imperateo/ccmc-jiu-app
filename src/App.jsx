@@ -39,9 +39,9 @@ const MODELS_URL = 'https://cdn.jsdelivr.net/npm/@vladmandic/face-api/model/';
 // ============================================================================
 // CONFIGURACAO DO RECONHECIMENTO FACIAL
 // ============================================================================
-const REQUIRED_BIOMETRIC_SAMPLES = 5;
-const AUTO_MATCH_THRESHOLD = 0.62;
-const REVIEW_MATCH_THRESHOLD = 0.68;
+const REQUIRED_BIOMETRIC_SAMPLES = 1;
+const AUTO_MATCH_THRESHOLD = 0.52;
+const REVIEW_MATCH_THRESHOLD = 0.60;
 
 function getStoredDescriptors(student) {
   // Formato novo e seguro para o Firestore: array de objetos, cada um contendo um vetor.
@@ -817,35 +817,23 @@ function StudentModal({ student, onClose, modelsLoaded }) {
   const [name, setName] = useState(student?.name || '');
   const [belt, setBelt] = useState(student?.belt || 'Branca');
   const [degrees, setDegrees] = useState(student?.degrees !== undefined ? student.degrees : 0);
-
   const [isCapturing, setIsCapturing] = useState(false);
   const [facingMode, setFacingMode] = useState('user');
   const [captureStatus, setCaptureStatus] = useState('');
-  const [descriptorArrays, setDescriptorArrays] = useState(() => getStoredDescriptors(student));
-  const [captureCount, setCaptureCount] = useState(() => getStoredDescriptors(student).length);
-  const [isFaceReady, setIsFaceReady] = useState(false);
+  const [descriptorArrays, setDescriptorArrays] = useState(() => getStoredDescriptors(student).slice(0, 1));
   const [isSaving, setIsSaving] = useState(false);
   const [saveError, setSaveError] = useState('');
 
-  const videoRef = useRef(null);
-  const canvasRef = useRef(null);
-  const streamRef = useRef(null);
-  const captureInProgressRef = useRef(false);
-  const lastCaptureRef = useRef(0);
-  const isCapturingRef = useRef(false);
-  const sampleCountRef = useRef(getStoredDescriptors(student).length);
-  const latestDetectionRef = useRef(null);
+  // A fotografia e o descritor ficam temporários até o usuário confirmar.
+  const [capturedImage, setCapturedImage] = useState(null);
+  const [pendingDescriptor, setPendingDescriptor] = useState(null);
+  const [detectedFaceBox, setDetectedFaceBox] = useState(null);
+  const [isAnalyzingFace, setIsAnalyzingFace] = useState(false);
 
-  const instructions = [
-    'Olhe diretamente para a camera.',
-    'Vire levemente o rosto para a esquerda.',
-    'Vire levemente o rosto para a direita.',
-    'Olhe um pouco para cima.',
-    'Olhe um pouco para baixo.'
-  ];
+  const videoRef = useRef(null);
+  const streamRef = useRef(null);
 
   const stopCamera = useCallback(() => {
-    isCapturingRef.current = false;
     if (streamRef.current) {
       streamRef.current.getTracks().forEach(track => track.stop());
       streamRef.current = null;
@@ -855,23 +843,18 @@ function StudentModal({ student, onClose, modelsLoaded }) {
 
   useEffect(() => () => stopCamera(), [stopCamera]);
 
-  const openCamera = async (mode, resetSamples = false) => {
+  const openCamera = async (mode = 'user', resetPreview = true) => {
     if (!modelsLoaded) return;
 
-    if (resetSamples) {
-      setDescriptorArrays([]);
-      setCaptureCount(0);
-      sampleCountRef.current = 0;
-      lastCaptureRef.current = 0;
-      captureInProgressRef.current = false;
-      latestDetectionRef.current = null;
-      setIsFaceReady(false);
+    if (resetPreview) {
+      setCapturedImage(null);
+      setPendingDescriptor(null);
+      setDetectedFaceBox(null);
     }
 
     setFacingMode(mode);
     setIsCapturing(true);
-    isCapturingRef.current = true;
-    setCaptureStatus('Iniciando camera...');
+    setCaptureStatus('Iniciando câmera...');
 
     try {
       if (streamRef.current) {
@@ -882,130 +865,138 @@ function StudentModal({ student, onClose, modelsLoaded }) {
         video: {
           facingMode: { ideal: mode },
           width: { ideal: 1280 },
-          height: { ideal: 720 }
+          height: { ideal: 1280 }
         },
         audio: false
       });
 
       streamRef.current = stream;
-      if (videoRef.current) videoRef.current.srcObject = stream;
 
-      setCaptureStatus(instructions[sampleCountRef.current] || 'Mantenha o rosto visivel.');
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        await videoRef.current.play().catch(() => {});
+      }
+
+      setCaptureStatus('Centralize o rosto, olhe de frente e toque em Tirar foto frontal.');
     } catch (err) {
-      console.error(err);
-      isCapturingRef.current = false;
+      console.error('Erro ao abrir câmera:', err);
       setIsCapturing(false);
-      setCaptureStatus('Erro ao acessar a camera selecionada.');
+      setCaptureStatus('Não foi possível acessar a câmera. Verifique as permissões do navegador.');
     }
   };
 
-  const startBiometricCapture = mode => openCamera(mode, true);
-
-  const toggleCameraFacing = () => {
+  const toggleCameraFacing = async () => {
     const nextMode = facingMode === 'user' ? 'environment' : 'user';
-    openCamera(nextMode, false);
+    await openCamera(nextMode, false);
   };
 
-  const handleVideoPlay = () => {
-    const detectFace = async () => {
-      const video = videoRef.current;
-      if (!video || video.paused || video.ended || !isCapturingRef.current) return;
+  const takeBiometricPhoto = async () => {
+    const video = videoRef.current;
 
-      try {
-        const detectorOptions = new window.faceapi.SsdMobilenetv1Options({
-          minConfidence: 0.7
-        });
-
-        const detection = await window.faceapi
-          .detectSingleFace(video, detectorOptions)
-          .withFaceLandmarks()
-          .withFaceDescriptor();
-
-        if (detection) {
-          const displaySize = {
-            width: video.clientWidth || video.videoWidth,
-            height: video.clientHeight || video.videoHeight
-          };
-
-          if (canvasRef.current && displaySize.width && displaySize.height) {
-            window.faceapi.matchDimensions(canvasRef.current, displaySize);
-            const resized = window.faceapi.resizeResults(detection, displaySize);
-            const ctx = canvasRef.current.getContext('2d');
-            ctx.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
-            window.faceapi.draw.drawDetections(canvasRef.current, resized);
-          }
-
-          const videoArea = Math.max(1, video.videoWidth * video.videoHeight);
-          const box = detection.detection.box;
-          const faceRatio = (box.width * box.height) / videoArea;
-
-          if (faceRatio < 0.08) {
-            latestDetectionRef.current = null;
-            setIsFaceReady(false);
-            setCaptureStatus('Aproxime o rosto da camera.');
-          } else if (detection.detection.score >= 0.85) {
-            latestDetectionRef.current = detection;
-            setIsFaceReady(true);
-            setCaptureStatus(
-              `${instructions[sampleCountRef.current] || 'Mantenha o rosto visivel.'} Quando estiver na posicao, toque em Capturar amostra.`
-            );
-          } else {
-            latestDetectionRef.current = null;
-            setIsFaceReady(false);
-            setCaptureStatus('Melhore a iluminacao e mantenha o rosto firme.');
-          }
-        } else {
-          latestDetectionRef.current = null;
-          setIsFaceReady(false);
-          setCaptureStatus('Posicione apenas um rosto no centro da camera.');
-          if (canvasRef.current) {
-            const ctx = canvasRef.current.getContext('2d');
-            ctx.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
-          }
-        }
-      } catch (err) {
-        console.error('Erro na deteccao:', err);
-      }
-
-      if (isCapturingRef.current) requestAnimationFrame(detectFace);
-    };
-
-    detectFace();
-  };
-
-  const captureCurrentSample = () => {
-    const detection = latestDetectionRef.current;
-    if (!detection || !isFaceReady || captureInProgressRef.current) {
-      setCaptureStatus('Aguarde o rosto ficar bem enquadrado antes de capturar.');
+    if (!video || !video.videoWidth || !video.videoHeight) {
+      setCaptureStatus('A câmera ainda está iniciando. Aguarde um instante.');
       return;
     }
 
-    if (sampleCountRef.current >= REQUIRED_BIOMETRIC_SAMPLES) return;
+    setIsAnalyzingFace(true);
+    setCaptureStatus('Analisando a fotografia...');
+    setPendingDescriptor(null);
+    setDetectedFaceBox(null);
 
-    captureInProgressRef.current = true;
-    const descriptor = Array.from(detection.descriptor);
+    try {
+      const captureCanvas = document.createElement('canvas');
+      captureCanvas.width = video.videoWidth;
+      captureCanvas.height = video.videoHeight;
 
-    setDescriptorArrays(previous => {
-      const updated = [...previous, descriptor].slice(0, REQUIRED_BIOMETRIC_SAMPLES);
-      const count = updated.length;
-      sampleCountRef.current = count;
-      setCaptureCount(count);
+      const context = captureCanvas.getContext('2d');
 
-      if (count >= REQUIRED_BIOMETRIC_SAMPLES) {
-        setCaptureStatus('5 amostras capturadas. Biometria pronta para salvar.');
-        setTimeout(stopCamera, 350);
-      } else {
-        setCaptureStatus(`Amostra ${count} salva. Agora: ${instructions[count]}`);
+      // Mantém a fotografia da câmera frontal igual à prévia espelhada.
+      if (facingMode === 'user') {
+        context.translate(captureCanvas.width, 0);
+        context.scale(-1, 1);
       }
 
-      return updated;
-    });
+      context.drawImage(video, 0, 0, captureCanvas.width, captureCanvas.height);
+      const dataUrl = captureCanvas.toDataURL('image/jpeg', 0.92);
+      const image = await window.faceapi.fetchImage(dataUrl);
 
-    latestDetectionRef.current = null;
-    setIsFaceReady(false);
-    setTimeout(() => {
-      captureInProgressRef.current = false;
-    }, 500);
+      const detectorOptions = new window.faceapi.SsdMobilenetv1Options({
+        minConfidence: 0.75
+      });
+
+      // Exige exatamente um rosto no cadastro.
+      const detections = await window.faceapi
+        .detectAllFaces(image, detectorOptions)
+        .withFaceLandmarks()
+        .withFaceDescriptors();
+
+      setCapturedImage(dataUrl);
+      stopCamera();
+
+      if (detections.length === 0) {
+        setCaptureStatus('Nenhum rosto foi encontrado. Melhore a iluminação e tire novamente.');
+        return;
+      }
+
+      if (detections.length > 1) {
+        setCaptureStatus('Mais de um rosto foi encontrado. Deixe somente o aluno no enquadramento.');
+        return;
+      }
+
+      const detection = detections[0];
+      const faceBox = detection.detection.box;
+      const imageArea = Math.max(1, image.width * image.height);
+      const faceRatio = (faceBox.width * faceBox.height) / imageArea;
+
+      if (faceRatio < 0.08) {
+        setCaptureStatus('O rosto está muito distante. Aproxime o celular e tire novamente.');
+        return;
+      }
+
+      setPendingDescriptor(Array.from(detection.descriptor));
+      setDetectedFaceBox({
+        x: faceBox.x,
+        y: faceBox.y,
+        width: faceBox.width,
+        height: faceBox.height,
+        imageWidth: image.width,
+        imageHeight: image.height
+      });
+      setCaptureStatus('Rosto frontal detectado. Confira a foto e toque em Confirmar rosto.');
+    } catch (error) {
+      console.error('Erro ao analisar fotografia facial:', error);
+      setCaptureStatus('Não foi possível analisar a fotografia. Tente novamente.');
+    } finally {
+      setIsAnalyzingFace(false);
+    }
+  };
+
+  const confirmBiometricPhoto = () => {
+    if (!pendingDescriptor) {
+      setCaptureStatus('Nenhum rosto válido está disponível para confirmação.');
+      return;
+    }
+
+    setDescriptorArrays([pendingDescriptor]);
+    setPendingDescriptor(null);
+    setCaptureStatus('Rosto confirmado. Agora toque em Salvar aluno para concluir.');
+  };
+
+  const retakeBiometricPhoto = async () => {
+    setCapturedImage(null);
+    setPendingDescriptor(null);
+    setDetectedFaceBox(null);
+    setCaptureStatus('');
+    await openCamera(facingMode, false);
+  };
+
+  const removeBiometrics = () => {
+    stopCamera();
+    setCapturedImage(null);
+    setPendingDescriptor(null);
+    setDetectedFaceBox(null);
+    setDescriptorArrays([]);
+    setCaptureStatus('Biometria removida. Tire uma nova foto frontal antes de salvar.');
   };
 
   const handleSave = async e => {
@@ -1023,8 +1014,6 @@ function StudentModal({ student, onClose, modelsLoaded }) {
       name: name.trim(),
       belt,
       degrees: Number(degrees),
-      // Firestore nao aceita arrays diretamente dentro de arrays.
-      // Por isso cada descritor fica dentro de um objeto { values: [...] }.
       descriptorSamples: validDescriptors.map(values => ({ values })),
       descriptorArray: validDescriptors[0] || null,
       biometricSamples: validDescriptors.length,
@@ -1041,28 +1030,33 @@ function StudentModal({ student, onClose, modelsLoaded }) {
       onClose();
     } catch (err) {
       console.error('Erro ao salvar cadastro:', err);
-      setSaveError(`Nao foi possivel salvar: ${err?.message || 'erro desconhecido'}`);
+      setSaveError(`Não foi possível salvar: ${err?.message || 'erro desconhecido'}`);
     } finally {
       setIsSaving(false);
     }
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-fade-in">
-      <div className="bg-white rounded-2xl shadow-xl w-full max-w-2xl overflow-hidden flex flex-col max-h-[96vh]">
-        <div className="px-6 py-4 border-b flex justify-between items-center bg-gray-50">
-          <h3 className="font-bold text-xl text-gray-800">{student ? 'Editar Aluno' : 'Novo Aluno'}</h3>
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-700"><X size={24} /></button>
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-0 sm:p-4 bg-black/60 backdrop-blur-sm animate-fade-in">
+      <div className="bg-white w-full h-full sm:h-auto sm:max-h-[96vh] sm:max-w-3xl sm:rounded-2xl shadow-xl overflow-hidden flex flex-col">
+        <div className="px-4 sm:px-6 py-4 border-b flex justify-between items-center bg-gray-50 shrink-0">
+          <h3 className="font-bold text-xl text-gray-800">{student ? 'Editar aluno' : 'Novo aluno'}</h3>
+          <button type="button" onClick={() => { stopCamera(); onClose(); }} className="text-gray-400 hover:text-gray-700">
+            <X size={24} />
+          </button>
         </div>
 
         <div className="p-3 sm:p-6 overflow-y-auto flex-1">
           <form id="student-form" onSubmit={handleSave} className="space-y-4">
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Nome Completo</label>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Nome completo</label>
               <input
-                type="text" required value={name} onChange={e => setName(e.target.value)}
+                type="text"
+                required
+                value={name}
+                onChange={e => setName(e.target.value)}
                 className="w-full p-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-red-500 outline-none"
-                placeholder="Ex: Joao Silva"
+                placeholder="Ex: João Silva"
               />
             </div>
 
@@ -1074,65 +1068,110 @@ function StudentModal({ student, onClose, modelsLoaded }) {
                 </select>
               </div>
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Graus (Listras)</label>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Graus (listras)</label>
                 <select value={degrees} onChange={e => setDegrees(Number(e.target.value))} className="w-full p-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 outline-none">
-                  {[0, 1, 2, 3, 4].map(g => <option key={g} value={g}>{g === 0 ? 'Sem Grau (Lisa)' : `${g} Grau`}</option>)}
+                  {[0, 1, 2, 3, 4].map(g => <option key={g} value={g}>{g === 0 ? 'Sem grau (lisa)' : `${g} grau`}</option>)}
                 </select>
               </div>
             </div>
 
             <div className="border-t pt-4 mt-4">
-              <label className="block text-sm font-medium text-gray-700 mb-2">Biometria Facial (IA)</label>
+              <label className="block text-sm font-medium text-gray-700 mb-2">Biometria facial</label>
 
-              {!isCapturing ? (
+              {!isCapturing && !capturedImage ? (
                 <div className="space-y-3">
                   {descriptorArrays.length > 0 ? (
                     <div className="bg-green-50 text-green-800 p-3 rounded-lg border border-green-200 flex items-center gap-2 text-sm font-medium">
-                      <CheckCircle2 size={18} /> {descriptorArrays.length} de {REQUIRED_BIOMETRIC_SAMPLES} amostras faciais gravadas.
+                      <CheckCircle2 size={18} /> Foto frontal confirmada e pronta para salvar.
                     </div>
                   ) : (
                     <div className="bg-amber-50 text-amber-800 p-3 rounded-lg border border-amber-200 flex items-start gap-2 text-sm">
-                      <AlertCircle size={18} className="shrink-0 mt-0.5" /> Sem biometria. A IA nao conseguira identificar este aluno.
+                      <AlertCircle size={18} className="shrink-0 mt-0.5" /> Sem biometria. A IA não conseguirá identificar este aluno.
                     </div>
                   )}
 
-                  {descriptorArrays.length === 1 && student && (
-                    <p className="text-xs text-amber-700">Cadastro antigo detectado. Refaça a biometria para registrar 5 angulos e melhorar a precisao.</p>
-                  )}
-
-                  <div className="flex gap-2">
-                    <button type="button" onClick={() => startBiometricCapture('user')} disabled={!modelsLoaded} className="flex-1 flex justify-center items-center gap-2 bg-gray-100 hover:bg-gray-200 text-gray-800 border border-gray-300 py-2.5 rounded-lg font-medium disabled:opacity-50 text-xs">
-                      <Camera size={16} /> Usar Frontal
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    <button type="button" onClick={() => openCamera('user', true)} disabled={!modelsLoaded} className="flex justify-center items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white py-3 rounded-lg font-semibold disabled:opacity-50">
+                      <Camera size={18} /> Abrir câmera frontal
                     </button>
-                    <button type="button" onClick={() => startBiometricCapture('environment')} disabled={!modelsLoaded} className="flex-1 flex justify-center items-center gap-2 bg-gray-100 hover:bg-gray-200 text-gray-800 border border-gray-300 py-2.5 rounded-lg font-medium disabled:opacity-50 text-xs">
-                      <Camera size={16} /> Usar Traseira
+                    <button type="button" onClick={() => openCamera('environment', true)} disabled={!modelsLoaded} className="flex justify-center items-center gap-2 bg-gray-100 hover:bg-gray-200 text-gray-800 border border-gray-300 py-3 rounded-lg font-semibold disabled:opacity-50">
+                      <Camera size={18} /> Abrir câmera traseira
                     </button>
                   </div>
+
+                  {descriptorArrays.length > 0 && (
+                    <button type="button" onClick={removeBiometrics} className="w-full text-sm text-red-700 hover:bg-red-50 border border-red-200 py-2.5 rounded-lg font-medium">
+                      Remover e cadastrar outra foto
+                    </button>
+                  )}
+
                   {!modelsLoaded && <p className="text-xs text-center text-gray-500">Aguarde a IA carregar.</p>}
+                  {captureStatus && <p className="text-sm text-center font-medium text-blue-700">{captureStatus}</p>}
+                </div>
+              ) : isCapturing ? (
+                <div className="space-y-3">
+                  <div className="relative w-full h-[68vh] sm:h-[70vh] max-h-[760px] mx-auto bg-black rounded-xl overflow-hidden flex items-center justify-center border-2 border-gray-800">
+                    <video
+                      ref={videoRef}
+                      autoPlay
+                      muted
+                      playsInline
+                      className={`absolute inset-0 w-full h-full object-cover bg-black ${facingMode === 'user' ? '-scale-x-100' : ''}`}
+                    />
+
+                    <div className="absolute left-[15%] right-[15%] top-[12%] bottom-[12%] border-2 border-white/90 rounded-[45%] pointer-events-none shadow-[0_0_0_9999px_rgba(0,0,0,0.22)]" />
+
+                    <div className="absolute top-3 left-3 right-3 bg-black/70 text-white px-3 py-2 rounded-lg text-center text-sm font-semibold">
+                      Olhe de frente e mantenha somente um rosto na marcação
+                    </div>
+
+                    <button type="button" onClick={toggleCameraFacing} className="absolute bottom-3 right-3 bg-white/95 text-gray-800 p-3 rounded-full shadow-lg" title="Alternar câmera">
+                      <RefreshCw size={20} />
+                    </button>
+                  </div>
+
+                  <button type="button" onClick={takeBiometricPhoto} disabled={isAnalyzingFace} className="w-full bg-blue-600 hover:bg-blue-700 disabled:bg-blue-300 text-white py-4 rounded-xl font-bold text-base transition-colors">
+                    <Camera size={20} className="inline mr-2" />
+                    {isAnalyzingFace ? 'Analisando rosto...' : 'Tirar foto frontal'}
+                  </button>
+
+                  <p className="text-sm text-center font-medium text-blue-700">{captureStatus}</p>
+
+                  <button type="button" onClick={stopCamera} className="w-full bg-gray-100 hover:bg-gray-200 text-gray-700 py-3 rounded-lg font-medium">
+                    Cancelar câmera
+                  </button>
                 </div>
               ) : (
-                <div className="space-y-3">
-                  <div className="relative w-full max-w-md mx-auto bg-black rounded-xl overflow-hidden aspect-[3/4] sm:aspect-[4/5] md:aspect-[3/4] max-h-[68vh] flex items-center justify-center border-2 border-gray-800">
-                    <video ref={videoRef} autoPlay muted playsInline onPlay={handleVideoPlay} className="absolute inset-0 w-full h-full object-contain bg-black" />
-                    <canvas ref={canvasRef} className="absolute inset-0 w-full h-full pointer-events-none" />
-                    <div className="absolute top-3 left-3 bg-black/70 text-white px-3 py-1 rounded-full text-xs font-bold">
-                      {captureCount}/{REQUIRED_BIOMETRIC_SAMPLES}
-                    </div>
-                    <button type="button" onClick={toggleCameraFacing} className="absolute bottom-3 right-3 bg-white/90 text-gray-800 p-2.5 rounded-full shadow-lg flex items-center gap-1 text-xs font-semibold">
-                      <RefreshCw size={16} /> Alternar
+                <div className="space-y-4">
+                  <div className="relative w-full min-h-[55vh] max-h-[70vh] bg-black rounded-xl overflow-hidden flex items-center justify-center">
+                    <img src={capturedImage} alt="Prévia do rosto capturado" className="w-full h-full max-h-[70vh] object-contain" />
+
+                    {detectedFaceBox && (
+                      <div
+                        className="absolute border-4 border-green-500 rounded-lg pointer-events-none shadow-[0_0_0_2px_rgba(255,255,255,0.8)]"
+                        style={{
+                          left: `${(detectedFaceBox.x / detectedFaceBox.imageWidth) * 100}%`,
+                          top: `${(detectedFaceBox.y / detectedFaceBox.imageHeight) * 100}%`,
+                          width: `${(detectedFaceBox.width / detectedFaceBox.imageWidth) * 100}%`,
+                          height: `${(detectedFaceBox.height / detectedFaceBox.imageHeight) * 100}%`
+                        }}
+                      />
+                    )}
+                  </div>
+
+                  <div className={`p-3 rounded-lg border text-sm font-medium ${pendingDescriptor ? 'bg-green-50 border-green-200 text-green-800' : 'bg-amber-50 border-amber-200 text-amber-800'}`}>
+                    {captureStatus}
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <button type="button" onClick={retakeBiometricPhoto} className="bg-gray-100 hover:bg-gray-200 text-gray-800 py-3 rounded-lg font-semibold">
+                      <RefreshCw size={18} className="inline mr-2" /> Tirar novamente
+                    </button>
+
+                    <button type="button" onClick={confirmBiometricPhoto} disabled={!pendingDescriptor} className="bg-green-600 hover:bg-green-700 disabled:bg-gray-300 disabled:text-gray-500 text-white py-3 rounded-lg font-bold">
+                      <CheckCircle2 size={18} className="inline mr-2" /> Confirmar rosto
                     </button>
                   </div>
-                  <button
-                    type="button"
-                    onClick={captureCurrentSample}
-                    disabled={!isFaceReady || captureCount >= REQUIRED_BIOMETRIC_SAMPLES}
-                    className="w-full bg-blue-600 hover:bg-blue-700 disabled:bg-gray-300 disabled:text-gray-500 text-white py-3 rounded-lg font-bold transition-colors"
-                  >
-                    <Camera size={18} className="inline mr-2" />
-                    Capturar amostra {Math.min(captureCount + 1, REQUIRED_BIOMETRIC_SAMPLES)} de {REQUIRED_BIOMETRIC_SAMPLES}
-                  </button>
-                  <p className="text-sm text-center font-medium text-blue-600">{captureStatus}</p>
-                  <button type="button" onClick={stopCamera} className="w-full bg-red-100 hover:bg-red-200 text-red-700 py-2 rounded-lg font-medium">Cancelar Camera</button>
                 </div>
               )}
             </div>
@@ -1140,13 +1179,16 @@ function StudentModal({ student, onClose, modelsLoaded }) {
         </div>
 
         {saveError && (
-          <div className="mx-6 mb-2 p-3 bg-red-50 border border-red-200 text-red-700 rounded-lg text-sm">
+          <div className="mx-4 sm:mx-6 mb-2 p-3 bg-red-50 border border-red-200 text-red-700 rounded-lg text-sm">
             {saveError}
           </div>
         )}
-        <div className="px-6 py-4 border-t bg-gray-50 flex justify-end gap-3">
-          <button type="button" onClick={onClose} className="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded-lg font-medium">Cancelar</button>
-          <button type="submit" form="student-form" disabled={isSaving} className="px-5 py-2 bg-red-600 hover:bg-red-700 disabled:bg-red-300 text-white rounded-lg font-medium shadow-sm">{isSaving ? 'Salvando...' : 'Salvar Aluno'}</button>
+
+        <div className="px-4 sm:px-6 py-4 border-t bg-gray-50 flex justify-end gap-3 shrink-0">
+          <button type="button" onClick={() => { stopCamera(); onClose(); }} className="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded-lg font-medium">Cancelar</button>
+          <button type="submit" form="student-form" disabled={isSaving || isCapturing || Boolean(capturedImage && pendingDescriptor)} className="px-5 py-2 bg-red-600 hover:bg-red-700 disabled:bg-red-300 text-white rounded-lg font-medium shadow-sm">
+            {isSaving ? 'Salvando...' : 'Salvar aluno'}
+          </button>
         </div>
       </div>
     </div>
