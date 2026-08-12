@@ -112,6 +112,48 @@ function getPortugueseDayOfWeek(date) {
   return days[date.getDay()];
 }
 
+function parseBirthDate(value) {
+  if (!value || typeof value !== 'string') return null;
+  const parts = value.split('-').map(Number);
+  if (parts.length !== 3 || parts.some(part => !Number.isFinite(part))) return null;
+  const [year, month, day] = parts;
+  const date = new Date(year, month - 1, day);
+  if (date.getFullYear() !== year || date.getMonth() !== month - 1 || date.getDate() !== day) return null;
+  return date;
+}
+function calculateAge(birthDate, referenceDate = new Date()) {
+  const birth = parseBirthDate(birthDate);
+  if (!birth) return null;
+  let age = referenceDate.getFullYear() - birth.getFullYear();
+  const birthdayPassed = referenceDate.getMonth() > birth.getMonth() ||
+    (referenceDate.getMonth() === birth.getMonth() && referenceDate.getDate() >= birth.getDate());
+  if (!birthdayPassed) age -= 1;
+  return age >= 0 ? age : null;
+}
+function formatBirthDate(birthDate) {
+  const birth = parseBirthDate(birthDate);
+  return birth ? birth.toLocaleDateString('pt-BR') : 'Não informada';
+}
+function getMonthlyBirthdays(students, referenceDate = new Date()) {
+  const month = referenceDate.getMonth();
+  const today = referenceDate.getDate();
+  return students
+    .map(student => ({ student, birth: parseBirthDate(student.birthDate) }))
+    .filter(item => item.birth && item.birth.getMonth() === month)
+    .map(item => ({
+      ...item.student,
+      birthdayDay: item.birth.getDate(),
+      ageTurning: referenceDate.getFullYear() - item.birth.getFullYear(),
+      isToday: item.birth.getDate() === today,
+      hasPassed: item.birth.getDate() < today,
+      daysUntil: item.birth.getDate() - today
+    }))
+    .sort((a, b) => {
+      if (a.isToday !== b.isToday) return a.isToday ? -1 : 1;
+      if (a.hasPassed !== b.hasPassed) return a.hasPassed ? 1 : -1;
+      return a.birthdayDay - b.birthdayDay;
+    });
+}
 // ============================================================================
 // COMPONENTE PRINCIPAL DO APP
 // ============================================================================
@@ -289,7 +331,32 @@ export default function App() {
             <NavItem icon={Users} label="Alunos" active={activeTab === 'students'} onClick={() => { setActiveTab('students'); setIsMobileMenuOpen(false); }} />
             <NavItem icon={ScanFace} label="Chamada IA" active={activeTab === 'attendance'} onClick={() => { setActiveTab('attendance'); setIsMobileMenuOpen(false); }} />
           </nav>
-
+          <div className="px-4 pb-4">
+            <div className="bg-gray-800/80 border border-gray-700 rounded-xl p-3">
+              <div className="flex items-center gap-2 mb-3">
+                <Cake size={17} className="text-red-400" />
+                <div>
+                  <p className="text-sm font-bold text-white">Aniversariantes</p>
+                  <p className="text-[10px] text-gray-400 capitalize">{new Date().toLocaleDateString('pt-BR', { month: 'long' })}</p>
+                </div>
+              </div>
+              <div className="space-y-2 max-h-44 overflow-y-auto pr-1">
+                {getMonthlyBirthdays(students).length === 0 ? (
+                  <p className="text-xs text-gray-500 leading-relaxed">Nenhum aniversariante com data cadastrada neste mês.</p>
+                ) : getMonthlyBirthdays(students).map(student => (
+                  <div key={student.id} className={`rounded-lg px-2.5 py-2 border ${student.isToday ? 'bg-red-600/20 border-red-500/50' : 'bg-gray-900/50 border-gray-700'}`}>
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="text-xs font-semibold text-gray-100 truncate" title={student.name}>{student.name}</p>
+                      <span className={`shrink-0 text-[10px] font-bold ${student.isToday ? 'text-red-300' : 'text-gray-300'}`}>{String(student.birthdayDay).padStart(2, '0')}</span>
+                    </div>
+                    <p className={`mt-0.5 text-[10px] ${student.isToday ? 'text-red-300 font-semibold' : 'text-gray-500'}`}>
+                      {student.isToday ? `Hoje • ${student.ageTurning} anos` : student.hasPassed ? `Completou ${student.ageTurning} anos` : `Em ${student.daysUntil} dia${student.daysUntil === 1 ? '' : 's'} • ${student.ageTurning} anos`}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
           <div className="p-4 border-t border-gray-800">
             <div className="flex items-center gap-2 text-sm">
               <div className={`w-2.5 h-2.5 rounded-full ${modelsLoaded ? 'bg-green-500' : 'bg-yellow-500 animate-pulse'}`}></div>
@@ -743,9 +810,11 @@ function StudentsView({ students, modelsLoaded, triggerConfirm }) {
   const exportStudentsToExcel = () => {
     if (students.length === 0) return;
 
-    const headers = ["Nome Completo", "Faixa", "Graus", "Biometria IA Cadastrada"];
+    const headers = ["Nome Completo", "Data de Nascimento", "Idade", "Faixa", "Graus", "Biometria IA Cadastrada"];
     const rows = students.map(student => [
       student.name,
+      student.birthDate ? formatBirthDate(student.birthDate) : "Não informada",
+      calculateAge(student.birthDate) ?? "N/A",
       student.belt,
       student.degrees !== undefined ? `${student.degrees}º Grau` : "Sem Grau",
       hasStudentBiometrics(student) ? "Sim" : "Não"
@@ -801,6 +870,10 @@ function StudentsView({ students, modelsLoaded, triggerConfirm }) {
                     </span>
                   )}
                 </div>
+                <p className="text-xs text-gray-500 mt-2 flex items-center gap-1.5">
+                  <Cake size={13} className="text-red-400" />
+                  {student.birthDate ? `${formatBirthDate(student.birthDate)} • ${calculateAge(student.birthDate)} anos` : 'Data de nascimento não informada'}
+                </p>
               </div>
               <button onClick={() => deleteStudent(student.id)} className="text-gray-400 hover:text-red-500 transition-colors">
                 <Trash2 size={18} />
@@ -860,6 +933,7 @@ function StudentModal({ student, onClose, modelsLoaded }) {
   const [name, setName] = useState(student?.name || '');
   const [belt, setBelt] = useState(student?.belt || 'Branca');
   const [degrees, setDegrees] = useState(student?.degrees ?? 0);
+  const [birthDate, setBirthDate] = useState(student?.birthDate || '');
   const [descriptorArrays, setDescriptorArrays] = useState(() => getStoredDescriptors(student).slice(0, 1));
   const [isCapturing, setIsCapturing] = useState(false);
   const [facingMode, setFacingMode] = useState('user');
@@ -989,7 +1063,7 @@ function StudentModal({ student, onClose, modelsLoaded }) {
     setSaveError('');
     const valid = descriptorArrays.filter(item => Array.isArray(item) && item.length === 128).slice(0, 1);
     const data = {
-      name: name.trim(), belt, degrees: Number(degrees),
+      name: name.trim(), belt, degrees: Number(degrees), birthDate: birthDate || null,
       descriptorSamples: valid.map(values => ({ values })),
       descriptorArray: valid[0] || null,
       biometricSamples: valid.length,
@@ -1017,6 +1091,11 @@ function StudentModal({ student, onClose, modelsLoaded }) {
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">Nome completo</label>
               <input required value={name} onChange={e => setName(e.target.value)} className="w-full p-2.5 border border-gray-300 rounded-lg" />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Data de nascimento</label>
+              <input type="date" required max={new Date().toISOString().split('T')[0]} value={birthDate} onChange={e => setBirthDate(e.target.value)} className="w-full p-2.5 border border-gray-300 rounded-lg" />
+              {birthDate && <p className="text-xs text-gray-500 mt-1">Idade atual: {calculateAge(birthDate)} anos</p>}
             </div>
             <div className="grid grid-cols-2 gap-4">
               <div><label className="block text-sm font-medium text-gray-700 mb-1">Faixa</label><select value={belt} onChange={e => setBelt(e.target.value)} className="w-full p-2.5 border rounded-lg">{['Branca','Azul','Roxa','Marrom','Preta'].map(item => <option key={item}>{item}</option>)}</select></div>
