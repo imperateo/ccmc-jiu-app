@@ -7,7 +7,7 @@ import {
 } from 'firebase/firestore';
 import { 
   Users, UserPlus, Camera, ScanFace, CheckCircle2, 
-  AlertCircle, ChevronRight, Menu, X, Trash2, CalendarCheck, Shield, Upload, RefreshCw, Download, BarChart3, History
+  AlertCircle, ChevronRight, Menu, X, Trash2, CalendarCheck, Shield, Upload, RefreshCw, Download, BarChart3, History, Cake
 } from 'lucide-react';
 
 // ============================================================================
