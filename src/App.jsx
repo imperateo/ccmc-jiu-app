@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { initializeApp } from 'firebase/app';
-import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from 'firebase/auth';
+import { getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut } from 'firebase/auth';
 import { 
   getFirestore, collection, doc, setDoc, getDocs, addDoc, 
   onSnapshot, query, serverTimestamp, deleteDoc 
@@ -118,6 +118,10 @@ function getPortugueseDayOfWeek(date) {
 export default function App() {
   const [user, setUser] = useState(null);
   const [isInitializing, setIsInitializing] = useState(true);
+  const [loginEmail, setLoginEmail] = useState('');
+  const [loginPassword, setLoginPassword] = useState('');
+  const [loginError, setLoginError] = useState('');
+  const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [modelsLoaded, setModelsLoaded] = useState(false);
   const [modelLoadingProgress, setModelLoadingProgress] = useState('Iniciando...');
   
@@ -140,28 +144,37 @@ export default function App() {
     setAlertModal({ isOpen: true, title, message });
   };
 
-  // Autenticação & Inicialização
+  // Autenticação por e-mail e senha
   useEffect(() => {
-    const initAuth = async () => {
-      try {
-        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-          await signInWithCustomToken(auth, __initial_auth_token);
-        } else {
-          await signInAnonymously(auth);
-        }
-      } catch (error) {
-        console.error("Erro na autenticação:", error);
-      }
-    };
-    initAuth();
-
-    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+    const unsubscribe = onAuthStateChanged(auth, currentUser => {
       setUser(currentUser);
       setIsInitializing(false);
     });
-
-    return () => unsubscribe();
+    return unsubscribe;
   }, []);
+
+  const handleLogin = async event => {
+    event.preventDefault();
+    if (!loginEmail.trim() || !loginPassword) {
+      setLoginError('Informe seu e-mail e sua senha.');
+      return;
+    }
+    setIsLoggingIn(true);
+    setLoginError('');
+    try {
+      await signInWithEmailAndPassword(auth, loginEmail.trim(), loginPassword);
+    } catch (error) {
+      console.error('Erro no login:', error);
+      setLoginError('E-mail ou senha incorretos. Verifique os dados e tente novamente.');
+    } finally {
+      setIsLoggingIn(false);
+    }
+  };
+
+  const handleLogout = async () => {
+    try { await signOut(auth); }
+    catch (error) { console.error('Erro ao sair:', error); }
+  };
 
   // Carregar Script e Modelos da Face-API
   useEffect(() => {
@@ -223,6 +236,34 @@ export default function App() {
   if (isInitializing) {
     return <div className="min-h-screen flex items-center justify-center bg-gray-900 text-white font-sans">Carregando Sistema CCMC...</div>;
   }
+  if (!user) {
+    return (
+      <div className="min-h-screen bg-gray-950 flex items-center justify-center p-4">
+        <div className="w-full max-w-md bg-white rounded-2xl shadow-2xl overflow-hidden">
+          <div className="bg-gray-900 text-white px-6 py-8 text-center">
+            <Shield className="w-14 h-14 text-red-500 mx-auto mb-3" />
+            <h1 className="text-2xl font-bold">CCMC Jiu Jitsu</h1>
+            <p className="text-sm text-gray-400 mt-1">Controle de presença</p>
+          </div>
+          <form onSubmit={handleLogin} className="p-6 space-y-5">
+            <div>
+              <label htmlFor="login-email" className="block text-sm font-medium text-gray-700 mb-1">E-mail</label>
+              <input id="login-email" type="email" required autoComplete="email" value={loginEmail} onChange={event => setLoginEmail(event.target.value)} placeholder="seuemail@exemplo.com" className="w-full px-4 py-3 border border-gray-300 rounded-lg outline-none focus:ring-2 focus:ring-red-500" />
+            </div>
+            <div>
+              <label htmlFor="login-password" className="block text-sm font-medium text-gray-700 mb-1">Senha</label>
+              <input id="login-password" type="password" required autoComplete="current-password" value={loginPassword} onChange={event => setLoginPassword(event.target.value)} placeholder="Digite sua senha" className="w-full px-4 py-3 border border-gray-300 rounded-lg outline-none focus:ring-2 focus:ring-red-500" />
+            </div>
+            {loginError && <div role="alert" className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg text-sm flex gap-2"><AlertCircle size={18} className="shrink-0 mt-0.5" /><span>{loginError}</span></div>}
+            <button type="submit" disabled={isLoggingIn} className="w-full bg-red-600 hover:bg-red-700 disabled:bg-red-300 text-white py-3 rounded-lg font-bold flex items-center justify-center gap-2">
+              {isLoggingIn ? <><span className="w-5 h-5 rounded-full border-2 border-white/40 border-t-white animate-spin" />Entrando...</> : 'Entrar'}
+            </button>
+            <p className="text-xs text-center text-gray-500">Acesso permitido somente para usuários autorizados.</p>
+          </form>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen flex flex-col md:flex-row bg-gray-50 text-gray-900 font-sans">
@@ -254,6 +295,8 @@ export default function App() {
               <div className={`w-2.5 h-2.5 rounded-full ${modelsLoaded ? 'bg-green-500' : 'bg-yellow-500 animate-pulse'}`}></div>
               <span className="text-gray-400">{modelsLoaded ? 'IA Ativa' : modelLoadingProgress}</span>
             </div>
+            <div className="mt-3 text-xs text-gray-500 truncate" title={user?.email}>{user?.email}</div>
+            <button type="button" onClick={handleLogout} className="mt-3 w-full px-4 py-2.5 bg-gray-800 hover:bg-red-600 text-gray-300 hover:text-white rounded-lg text-sm font-semibold transition-colors">Sair do sistema</button>
           </div>
         </div>
       </aside>
